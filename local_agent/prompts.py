@@ -96,6 +96,9 @@ def extract_json(text: str) -> dict:
             continue
         if isinstance(payload, dict):
             return normalize(payload)
+    rescued = _rescue_fields(text)
+    if rescued:
+        return normalize(rescued)
     return normalize({"summary": text.strip()[:1500]})
 
 
@@ -109,6 +112,34 @@ def extract_list(text: str, key: str) -> list[str]:
         if isinstance(payload, dict) and isinstance(payload.get(key), list):
             return [str(item) for item in payload[key]]
     return []
+
+
+_JSON_STRING = r'"((?:[^"\\]|\\.)*)"'
+
+
+def _decode(raw: str) -> str:
+    try:
+        return json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        return raw
+
+
+def _rescue_fields(text: str) -> dict | None:
+    """Repêche les champs un à un quand l'objet est cassé en son milieu, et pas seulement coupé à la fin.
+
+    Le modèle ouvre parfois une clé sans fermer la liste précédente : refermer la fin ne répare rien, et
+    sans ce repêchage le rapport présenterait le JSON brut en guise de résumé.
+    """
+    found = re.search(r'"summary"\s*:\s*' + _JSON_STRING, text, re.S)
+    if not found:
+        return None
+    payload: dict[str, object] = {"summary": _decode(found.group(1))}
+    stop = "|".join(_LIST_KEYS)
+    for key in _LIST_KEYS:
+        block = re.search(rf'"{key}"\s*:\s*\[(.*?)(?=\]|"(?:{stop})"\s*:)', text, re.S)
+        if block:
+            payload[key] = [_decode(item) for item in re.findall(_JSON_STRING, block.group(1))]
+    return payload
 
 
 def _salvage_truncated(text: str) -> str | None:

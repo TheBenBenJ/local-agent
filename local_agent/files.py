@@ -400,11 +400,22 @@ def render_file(config: Config, item: SelectedFile, *, numbered: bool = True) ->
     return f"===== FICHIER {item.relative} =====\n{body}{suffix}\n"
 
 
-def build_chunks(config: Config, files: list[SelectedFile], *, numbered: bool = True) -> list[str]:
+@dataclass
+class ChunkSet:
+    """Les lots, et ce qu'il a fallu laisser dehors pour tenir dans les bornes."""
+
+    parts: list[str]
+    files_included: int
+    files_truncated: int
+
+
+def build_chunks(config: Config, files: list[SelectedFile], *, numbered: bool = True) -> ChunkSet:
     """Assemble les fichiers en lots bornés, sans jamais tout envoyer d'un coup."""
     chunks: list[str] = []
     current: list[str] = []
     current_size = 0
+    included = 0
+    truncated = 0
     for item in files:
         rendered = render_file(config, item, numbered=numbered)
         if not rendered:
@@ -414,10 +425,12 @@ def build_chunks(config: Config, files: list[SelectedFile], *, numbered: bool = 
             current, current_size = [], 0
         if len(rendered) > config.chunk_chars:
             rendered = rendered[: config.chunk_chars] + "\n[... lot tronqué ...]\n"
+            truncated += 1
         current.append(rendered)
         current_size += len(rendered)
+        included += 1
         if len(chunks) >= config.max_chunks:
             break
     if current and len(chunks) < config.max_chunks:
         chunks.append("".join(current))
-    return chunks[: config.max_chunks]
+    return ChunkSet(parts=chunks[: config.max_chunks], files_included=included, files_truncated=truncated)

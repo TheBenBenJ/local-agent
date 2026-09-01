@@ -105,16 +105,17 @@ _STOP_WORDS = {
 }
 
 
-def _flag_partial_sample(report: Report, *, kept: int, total: int) -> Report:
+def _flag_partial_sample(report: Report, omissions: list[str]) -> Report:
     """Dit en clair que la réponse porte sur un échantillon.
 
     Le rapport chiffrait déjà l'écart dans ses statistiques, mais un compteur en fin de rapport se perd
     au premier résumé : sur une question d'énumération, l'orchestrateur conclut alors à l'exhaustivité.
     """
-    if kept >= total:
+    retenues = [item for item in omissions if item]
+    if not retenues:
         return report
     report.summary = (
-        f"Réponse établie sur {kept} correspondances examinées sur {total} : "
+        f"Réponse établie sur un échantillon ({' ; '.join(retenues)}) : "
         f"une énumération tirée de ce rapport peut être incomplète.\n\n{report.summary}"
     )
     return report
@@ -319,7 +320,10 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
         payload,
         stats={"patterns": len(patterns), "matches_kept": len(matches), "matches_total": total, "files": len(counts)},
     )
-    return _flag_partial_sample(report, kept=len(matches), total=total)
+    return _flag_partial_sample(
+        report,
+        [f"{len(matches)} correspondances examinées sur {total}" if len(matches) < total else ""]
+    )
 
 
 def analyze(
@@ -344,7 +348,8 @@ def analyze(
             next_actions=["Vérifier le chemin ou assouplir les filtres --glob"],
         )
 
-    chunks = build_chunks(config, files)
+    chunk_set = build_chunks(config, files)
+    chunks = chunk_set.parts
 
     # Contenu plus court qu'une synthèse : le rendre tel quel et laisser l'orchestrateur juger.
     joined = "\n".join(chunks)
@@ -413,7 +418,15 @@ def analyze(
         report.next_actions.append(
             f"{total - len(files)} fichiers non analysés (limite de {max_files or config.max_files} fichiers par appel)"
         )
-    return report
+    return _flag_partial_sample(
+        report,
+        [
+            f"{chunk_set.files_included} fichiers lus sur {total} trouvés"
+            if total > chunk_set.files_included else "",
+            f"{chunk_set.files_truncated} fichiers coupés faute de place"
+            if chunk_set.files_truncated else ""
+        ]
+    )
 
 
 def _signature(line: str) -> str:
@@ -472,10 +485,17 @@ def analyze_logs(
         + prompts.JSON_CONTRACT
     )
     payload = _ask(client, prompts.SYSTEM_ANALYST, prompt)
-    return _payload_to_report(
+    report = _payload_to_report(
         "Analyse de logs",
         payload,
         stats={"lines_matched": len(matches), "signatures": len(clusters), "patterns": len(used_patterns)},
+    )
+    return _flag_partial_sample(
+        report,
+        [
+            f"{len(matches)} lignes retenues sur {total}" if len(matches) < total else "",
+            f"{len(ranked)} signatures examinées sur {len(clusters)}" if len(ranked) < len(clusters) else ""
+        ]
     )
 
 
