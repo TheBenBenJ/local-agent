@@ -105,6 +105,21 @@ _STOP_WORDS = {
 }
 
 
+def _flag_partial_sample(report: Report, *, kept: int, total: int) -> Report:
+    """Dit en clair que la réponse porte sur un échantillon.
+
+    Le rapport chiffrait déjà l'écart dans ses statistiques, mais un compteur en fin de rapport se perd
+    au premier résumé : sur une question d'énumération, l'orchestrateur conclut alors à l'exhaustivité.
+    """
+    if kept >= total:
+        return report
+    report.summary = (
+        f"Réponse établie sur {kept} correspondances examinées sur {total} : "
+        f"une énumération tirée de ce rapport peut être incomplète.\n\n{report.summary}"
+    )
+    return report
+
+
 def _deaccent(word: str) -> str:
     return "".join(
         char for char in unicodedata.normalize("NFD", word) if unicodedata.category(char) != "Mn"
@@ -299,11 +314,12 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
         "des occurrences secondaires.\n\n" + prompts.JSON_CONTRACT
     )
     payload = _ask(client, prompts.SYSTEM_ANALYST, prompt, temperature=0.0)
-    return _payload_to_report(
+    report = _payload_to_report(
         "Recherche locale",
         payload,
         stats={"patterns": len(patterns), "matches_kept": len(matches), "matches_total": total, "files": len(counts)},
     )
+    return _flag_partial_sample(report, kept=len(matches), total=total)
 
 
 def analyze(

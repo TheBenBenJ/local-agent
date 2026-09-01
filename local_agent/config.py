@@ -77,7 +77,9 @@ class Config:
     base_url: str = field(default_factory=lambda: _str_env("MLX_BASE_URL", "http://127.0.0.1:11234/v1").rstrip("/"))
     model: str = field(default_factory=lambda: _str_env("MLX_MODEL", "auto"))
     api_key: str = field(default_factory=lambda: _str_env("MLX_API_KEY", ""))
-    temperature: float = field(default_factory=lambda: _float_env("MLX_TEMPERATURE", 0.2))
+    # Une analyse n'a rien à gagner à varier. Sans rendre les réponses reproductibles pour autant : le
+    # serveur ne suit pas le même chemin numérique selon que le prompt est traité à froid ou en cache.
+    temperature: float = field(default_factory=lambda: _float_env("MLX_TEMPERATURE", 0.0))
     timeout: int = field(default_factory=lambda: _int_env("MLX_TIMEOUT", 300))
     max_completion_tokens: int = field(default_factory=lambda: _int_env("MLX_MAX_TOKENS", 1600))
 

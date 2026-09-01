@@ -110,7 +110,7 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 | `MLX_BASE_URL`                  | `http://127.0.0.1:11234/v1`  | Racine de l'API compatible OpenAI                            |
 | `MLX_MODEL`                     | `auto`                       | `auto` prend le modèle déjà chargé                           |
 | `MLX_API_KEY`                   | vide                         | Jeton Bearer, uniquement si le serveur en exige un           |
-| `MLX_TEMPERATURE`               | `0.2`                        | Température des requêtes                                     |
+| `MLX_TEMPERATURE`               | `0`                          | Température des requêtes                                     |
 | `MLX_TIMEOUT`                   | `300`                        | Timeout HTTP par requête, en secondes                        |
 | `MLX_MAX_TOKENS`                | `1600`                       | Plafond de génération par requête                            |
 | `LOCAL_AGENT_MAX_FILES`         | `40`                         | Fichiers analysés au maximum par appel                       |
