@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+
+# Configuration locale : peut porter une clé d'API, contrairement à local-agent.env.example
+local-agent.env
+
+# Traces et données d'exécution
+var/
+
+# Cas de mesure dirigés sur un dépôt de travail : décrivent l'architecture d'un projet non public
+tests/cases.local.json
+
+.idea/
+.vscode/
+.DS_Store

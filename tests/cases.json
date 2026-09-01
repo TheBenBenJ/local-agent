@@ -1,0 +1,81 @@
+{
+  "commentaire": [
+    "Cas de mesure par défaut, dirigés sur ce dépôt même : ils tournent sans dépendance à un projet",
+    "particulier. Pour mesurer sur un vrai dépôt de travail, copier ce fichier en tests/cases.local.json",
+    "(ignoré par git) et l'adapter, puis passer --cases tests/cases.local.json.",
+    "Types de référence disponibles : grep (grep puis lecture des fichiers les plus denses),",
+    "tree (somme des fichiers du chemin), log (erreurs greppées plus la fin du fichier),",
+    "command (sortie brute d'une commande)."
+  ],
+  "volume": [
+    {
+      "nom": "recherche : décision de déléguer",
+      "agent": ["search", "quelle fonction décide s'il faut déléguer au modèle ?", "--path", "local_agent"],
+      "baseline": {"type": "grep", "patterns": ["is_worth_delegating", "PASSTHROUGH"], "path": "local_agent"}
+    },
+    {
+      "nom": "recherche : garde-fous de chemin",
+      "agent": ["search", "quels répertoires et fichiers les garde-fous refusent-ils ?", "--path", "local_agent"],
+      "baseline": {"type": "grep", "patterns": ["DENIED_DIRECTORIES", "DENIED_PATTERNS"], "path": "local_agent"}
+    },
+    {
+      "nom": "revue : local_agent/budget.py",
+      "agent": ["review", "local_agent/budget.py"],
+      "baseline": {"type": "tree", "path": "local_agent/budget.py"}
+    },
+    {
+      "nom": "synthèse : README.md",
+      "agent": ["summarize", "README.md"],
+      "baseline": {"type": "tree", "path": "README.md"}
+    },
+    {
+      "nom": "analyse : module de fichiers",
+      "agent": ["summarize", "local_agent/files.py"],
+      "baseline": {"type": "tree", "path": "local_agent/files.py"}
+    }
+  ],
+  "sonde": {
+    "quick": [
+      {"outil": "local_ping", "arguments": {}},
+      {"outil": "local_search", "arguments": {"query": "comment le serveur MCP répond-il à tools/list ?", "path": "local_agent"}}
+    ],
+    "full": [
+      {"outil": "local_ping", "arguments": {}},
+      {"outil": "local_search", "arguments": {"query": "comment le serveur MCP répond-il à tools/list ?", "path": "local_agent"}},
+      {"outil": "local_review", "arguments": {"path": "local_agent/budget.py"}},
+      {"outil": "local_analyze", "arguments": {"path": "local_agent/report.py", "mode": "summarize"}},
+      {"outil": "local_fix", "arguments": {"path": "local_agent/budget.py", "task": "aucune modification à faire", "dry_run": true}},
+      {"outil": "local_analyze", "arguments": {"path": "../../etc", "task": "confinement"}}
+    ]
+  },
+  "exactitude": [
+    {
+      "nom": "décision de déléguer",
+      "commande": ["search", "quelle fonction décide s'il faut déléguer au modèle ?", "--path", "local_agent"],
+      "attendus": ["is_worth_delegating"],
+      "interdits": [],
+      "verite": "budget.is_worth_delegating, comparée au seuil PASSTHROUGH_CHARS"
+    },
+    {
+      "nom": "garde-fous de chemin",
+      "commande": ["search", "quels répertoires les garde-fous refusent-ils ?", "--path", "local_agent"],
+      "attendus": ["DENIED_DIRECTORIES"],
+      "interdits": [],
+      "verite": "files.DENIED_DIRECTORIES, complétée par DENIED_PATTERNS pour les fichiers"
+    },
+    {
+      "nom": "répartition de l'échantillon",
+      "commande": ["search", "comment l'échantillon de correspondances est-il réparti entre les fichiers ?", "--path", "local_agent"],
+      "attendus": ["balanced_sample"],
+      "interdits": [],
+      "verite": "files.balanced_sample, avec _spread pour l'ordre dichotomique dans chaque fichier"
+    },
+    {
+      "nom": "neutralisation de stdin",
+      "commande": ["search", "pourquoi stdin est-il neutralisé lors des appels à ripgrep ?", "--path", "local_agent"],
+      "attendus": ["DEVNULL"],
+      "interdits": [],
+      "verite": "stdin=subprocess.DEVNULL, sans quoi ripgrep consomme le flux JSON-RPC du serveur MCP"
+    }
+  ]
+}
