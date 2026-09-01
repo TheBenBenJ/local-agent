@@ -1,39 +1,65 @@
 # local-agent
 
-Délégation des tâches volumineuses ou mécaniques à un modèle servi localement par `mlx-serve`, afin de
-préserver le contexte et le quota du modèle orchestrateur (Claude Code, Cursor).
+**Give your local LLM the repo, not Claude's context window.**
+
+Délégation du contexte de dépôt à un modèle servi localement (API compatible OpenAI), afin de préserver
+le contexte et le quota du modèle orchestrateur (Claude Code, Cursor, tout client MCP).
 
 Le principe : l'orchestrateur ne transmet **jamais** de contenu de fichier. Il transmet un chemin et une
-consigne. Le local-agent découvre les fichiers avec `ripgrep`, sélectionne, découpe, interroge le modèle
-local, puis ne renvoie qu'un rapport structuré de quelques centaines de tokens.
+consigne, et n'a même pas à choisir les fichiers. Le local-agent découvre les fichiers avec `ripgrep`,
+sélectionne, découpe, interroge le modèle local, puis ne renvoie qu'un rapport structuré de quelques
+centaines de tokens, avec l'économie de contexte chiffrée à chaque appel.
+
+## Résultats mesurés
+
+Banc de volume sur un dépôt Symfony réel de plus de 8 000 fichiers, contre la lecture manuelle qu'aurait
+faite l'orchestrateur (détail dans `tests/bench.py`, latences sur un MoE 35B quantifié 4-bit) :
+
+| Tâche | Contexte évité | Compression | Durée |
+|---|---|---|---|
+| Analyse d'un log de 1,3 Mo | ~324 000 tokens | 517x | 13 s |
+| Recherche « comment le projet empêche-t-il X ? » | ~4 700 tokens | 14x | 0,9 s |
+| Recherche traversant beaucoup de fichiers | ~6 400 tokens | 12x | 8,6 s |
+| Synthèse d'un document de 10 Ko | ~2 500 tokens | 5,5x | 7,8 s |
+| Revue d'un diff de 15 Ko | ~3 000 tokens | 5x | 11 s |
+| Revue d'un petit répertoire | négatif (0,8x) | l'outil rend le brut | 9 s |
+| Contrôle projet à sortie courte | négatif (0,9x) | l'outil rend le brut | 1 s |
+
+Les deux dernières lignes sont le garde-fou de frugalité : quand la preuve brute est plus courte qu'une
+synthèse, l'outil la renvoie telle quelle sans appeler le modèle, en disant pourquoi. Justesse mesurée
+contre vérité terrain : 15/15 sur le dépôt client, 12/12 sur ce dépôt (`tests/bench_exactitude.py`).
+
+## Installation
+
+```bash
+git clone https://github.com/TheBenBenJ/local-agent ~/.local-agent
+~/.local-agent/install.sh
+```
+
+L'installateur enregistre le serveur MCP pour Claude Code (`~/.claude.json`) et Cursor
+(`~/.cursor/mcp.json`) sans écraser une configuration existante. Redémarrer les clients, puis vérifier
+avec l'outil `local_ping`.
 
 ## Prérequis
 
 - Python 3.9+ (uniquement la bibliothèque standard, aucune dépendance à installer)
 - `ripgrep` (`rg`)
 - `git`
-- `mlx-serve` en écoute, avec une API compatible OpenAI
-- Docker en marche pour les contrôles projet (`phpstan`, `phpunit`, `eslint`…)
+- un serveur local avec API compatible OpenAI : `mlx-serve`, Ollama, llama.cpp, LM Studio, vLLM…
+- Docker uniquement pour les contrôles projet du preset Symfony (`phpstan`, `phpunit`…)
 
-## Lancer mlx-serve
+## Serveur local
 
-Le serveur est fourni par l'application **MLX Core**. Il est actuellement lancé ainsi :
-
-```bash
-"/Applications/MLX Core.app/Contents/MacOS/mlx-serve" \
-  --model ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit \
-  --serve --port 11234 --host 127.0.0.1
-```
-
-Vérifier qu'il répond :
+Développé et mesuré contre `mlx-serve` (application MLX Core sur Apple Silicon), mais tout endpoint
+compatible OpenAI convient via `LOCAL_LLM_BASE_URL` :
 
 ```bash
 curl -s http://127.0.0.1:11234/v1/models | head -c 200
 ~/.local-agent/bin/local-agent ping
 ```
 
-`MLX_MODEL=auto` sélectionne automatiquement le modèle déjà chargé côté serveur, il n'y a donc rien à
-changer ici en cas de bascule de modèle.
+`LOCAL_LLM_MODEL=auto` sélectionne automatiquement le modèle déjà chargé côté serveur, il n'y a donc
+rien à changer en cas de bascule de modèle.
 
 ### Choix du modèle
 
@@ -52,26 +78,21 @@ sans redémarrage : `POST /v1/unload-model` puis `POST /v1/load-model {"model": 
 
 ## Emplacement et périmètre
 
-Tout vit dans `~/.local-agent/`, hors de tout dépôt git : rien n'est versionné et rien n'est partagé avec
-une équipe. La racine du dépôt sur lequel travailler est déduite du répertoire courant via
-`git rev-parse --show-toplevel`, l'outil fonctionne donc dans n'importe quel projet sans réglage, et
-`LOCAL_AGENT_REPO_ROOT` permet de la forcer.
+Tout vit dans `~/.local-agent/`, hors des dépôts sur lesquels il travaille. La racine du dépôt à
+analyser est déduite du répertoire courant via `git rev-parse --show-toplevel`, l'outil fonctionne donc
+dans n'importe quel projet sans réglage, et `LOCAL_AGENT_REPO_ROOT` permet de la forcer.
 
 ## Utilisation depuis Claude Code ou Cursor
 
-Le serveur MCP est déclaré dans deux fichiers de configuration personnels :
+`install.sh` fait l'enregistrement. Pour le faire à la main, déclarer le serveur dans `~/.claude.json`
+(Claude Code) ou `~/.cursor/mcp.json` (Cursor), clé `mcpServers.local-agent`, commande
+`~/.local-agent/bin/local-agent-mcp`. Deux subtilités :
 
-- **Claude Code** : `~/.claude.json`, sous `projects["<chemin du projet>"].mcpServers.local-agent`, avec
-  `LOCAL_AGENT_REPO_ROOT` épinglé sur le projet. Pour l'activer sur un autre projet, dupliquer l'entrée
-  sous la clé du projet concerné.
-- **Cursor** : `~/.cursor/mcp.json`, portée globale. Cursor lance le serveur depuis le répertoire
-  personnel et **ne substitue pas** `${workspaceFolder}`, la racine doit donc y être épinglée en dur sur
-  un projet. Pour travailler sur un autre dépôt depuis Cursor, passer son chemin absolu dans le paramètre
-  `repo` de l'outil appelé, qui prime sur la configuration.
-
-Les règles indiquant *quand* déléguer sont dans `~/.claude/CLAUDE.md` (mémoire utilisateur Claude Code).
-Pour Cursor, les recopier dans Settings puis Rules puis User Rules, ou s'appuyer simplement sur les
-descriptions des outils MCP qui portent déjà cette guidance.
+- **Cursor ne substitue pas** `${workspaceFolder}` : ne pas s'en servir. Pour viser un autre dépôt que
+  celui détecté, passer son chemin absolu dans le paramètre `repo` de l'outil appelé.
+- Les règles indiquant *quand* déléguer se placent dans la mémoire utilisateur du client
+  (`~/.claude/CLAUDE.md` pour Claude Code, User Rules pour Cursor), ou se laissent porter par les
+  descriptions des outils MCP qui contiennent déjà cette guidance.
 
 Redémarrer le client après toute modification de ces fichiers.
 
@@ -80,18 +101,31 @@ Redémarrer le client après toute modification de ces fichiers.
 | `local_search`       | Localiser du code à partir d'une question                    | `query`, `path`, `globs`                               |
 | `local_analyze`      | Analyse libre, résumé de fichiers, détection de doublons      | `path`, `task`, `mode`, `globs`, `max_files`           |
 | `local_review`       | Première passe de revue de code                              | `path`, `task`, `globs`                                |
-| `local_fix`          | Modification mécanique écrite sur disque                     | `path`, `task`, `globs`, `dry_run`, `allow_dirty`      |
+| `local_fix`          | Modification mécanique, transactionnelle par défaut           | `path`, `task`, `mode`, `patch_id`, `globs`, `allow_dirty` |
 | `local_test_analysis`| Contrôle projet filtré et synthétisé                         | `kind`, `target`, `filter`                             |
 | `local_log_analysis` | Analyse de logs volumineux                                   | `path`, `task`, `patterns`                             |
 | `local_diff_review`  | Revue d'un diff git avec message de commit proposé            | `scope`, `base`, `task`                                |
-| `local_ping`         | Diagnostic de connexion, racine résolue et configuration      | aucun                                                  |
+| `local_ping`         | Diagnostic : connexion, racine, contrôles disponibles, config | aucun                                                  |
 
 Tous les outils acceptent en plus un paramètre optionnel `repo`, chemin absolu du dépôt à analyser, qui
 prime sur la racine configurée. `local_ping` affiche la racine effective et signale explicitement une
 racine inutilisable.
 
-Chaque appel MCP est journalisé dans `~/.local-agent/usage.jsonl` (outil, durée, taille de sortie,
-erreur éventuelle) : de quoi mesurer sur la durée ce que la délégation rapporte réellement.
+### Modification transactionnelle
+
+`local_fix` ne réécrit plus directement par défaut. `mode=propose` (défaut) génère les changements,
+renvoie le diff unifié et un `patch_id`, sans rien écrire : la proposition est figée sur disque avec le
+hash de chaque fichier source. `mode=apply` avec ce `patch_id` applique le contenu exact proposé, et
+refuse tout fichier modifié entre-temps (proposition à refaire sur la version courante). Un bundle
+appliqué est consommé, un bundle de plus de 7 jours est purgé. `mode=direct` garde l'ancien comportement
+pour les changements triviaux.
+
+### Observabilité
+
+Chaque réponse se termine par l'économie estimée : tokens évités sur l'appel, cumul de la session, cumul
+de vie (`~/.local-agent/usage-totals.json`). Chaque appel est aussi journalisé en JSONL dans
+`~/.local-agent/usage.jsonl` (outil, durée, tailles, erreur éventuelle) : de quoi vérifier sur la durée
+ce que la délégation rapporte réellement, outil par outil.
 
 ## Utilisation en ligne de commande
 
@@ -108,13 +142,14 @@ erreur éventuelle) : de quoi mesurer sur la durée ce que la délégation rappo
 ~/.local-agent/bin/local-agent logs var/log/symfony.log
 ~/.local-agent/bin/local-agent logs var/log --pattern 'CRITICAL' --pattern 'Uncaught'
 
-~/.local-agent/bin/local-agent fix src/Model --task "ajoute les docblocks @return manquants" --dry-run
+# fix propose par défaut : diff + patch_id, rien n'est écrit
 ~/.local-agent/bin/local-agent fix src/Model --task "ajoute les docblocks @return manquants"
+~/.local-agent/bin/local-agent apply a1b2c3d4e5f6   # applique la proposition exacte
+~/.local-agent/bin/local-agent fix src/Model --task "..." --mode direct   # écriture immédiate
 
+~/.local-agent/bin/local-agent check                 # premier contrôle disponible
 ~/.local-agent/bin/local-agent check phpstan --target src/Api
-~/.local-agent/bin/local-agent check phpunit --target tests/Unit/Services/ContratTravail
-~/.local-agent/bin/local-agent check cs-fixer --target src
-~/.local-agent/bin/local-agent check eslint
+~/.local-agent/bin/local-agent check pytest --target tests
 
 ~/.local-agent/bin/local-agent diff              # tout le non committé (worktree)
 ~/.local-agent/bin/local-agent diff staged
@@ -130,12 +165,12 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 
 | Variable                        | Défaut                       | Rôle                                                        |
 | ------------------------------- | ---------------------------- | ----------------------------------------------------------- |
-| `MLX_BASE_URL`                  | `http://127.0.0.1:11234/v1`  | Racine de l'API compatible OpenAI                            |
-| `MLX_MODEL`                     | `auto`                       | `auto` prend le modèle déjà chargé                           |
-| `MLX_API_KEY`                   | vide                         | Jeton Bearer, uniquement si le serveur en exige un           |
-| `MLX_TEMPERATURE`               | `0`                          | Température des requêtes                                     |
-| `MLX_TIMEOUT`                   | `300`                        | Timeout HTTP par requête, en secondes                        |
-| `MLX_MAX_TOKENS`                | `1600`                       | Plafond de génération par requête                            |
+| `LOCAL_LLM_BASE_URL`            | `http://127.0.0.1:11234/v1`  | Racine de l'API compatible OpenAI                            |
+| `LOCAL_LLM_MODEL`               | `auto`                       | `auto` prend le modèle déjà chargé                           |
+| `LOCAL_LLM_API_KEY`             | vide                         | Jeton Bearer, uniquement si le serveur en exige un           |
+| `LOCAL_LLM_TEMPERATURE`         | `0`                          | Température des requêtes                                     |
+| `LOCAL_LLM_TIMEOUT`             | `300`                        | Timeout HTTP par requête, en secondes                        |
+| `LOCAL_LLM_MAX_TOKENS`          | `1600`                       | Plafond de génération par requête                            |
 | `LOCAL_AGENT_MAX_FILES`         | `40`                         | Fichiers analysés au maximum par appel                       |
 | `LOCAL_AGENT_MAX_FILE_SIZE`     | `120000`                     | Octets lus au maximum par fichier                            |
 | `LOCAL_AGENT_MAX_OUTPUT_TOKENS` | `900`                        | Plafond du rapport renvoyé à l'orchestrateur                 |
@@ -146,6 +181,28 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 | `LOCAL_AGENT_COMMAND_TIMEOUT`   | `900`                        | Timeout des contrôles projet                                 |
 | `LOCAL_AGENT_REPO_ROOT`         | racine du dépôt              | Surcharge de la racine, utile pour les tests                  |
 
+Les anciens noms `MLX_*` restent lus en rétrocompatibilité quand la variante `LOCAL_LLM_*` est absente.
+
+## Contrôles projet par dépôt
+
+`local_test_analysis` exécute les contrôles déclarés par le dépôt. Sans déclaration, un preset est
+choisi selon le langage : Symfony (`phpstan`, `phpunit`, `cs-fixer`, `twig`, `yaml`, `eslint`, via
+`docker compose exec`), Node (`test`, `lint`, `types`) ou Python (`pytest`, `ruff`, `mypy`). Pour
+déclarer les siens, créer `.local-agent.json` à la racine du dépôt :
+
+```json
+{
+  "checks": {
+    "test": {"command": "npm test", "label": "Tests"},
+    "types": {"command": ["npx", "tsc", "--noEmit"]},
+    "lint": {"command": "npm run lint", "accepts_target": true}
+  }
+}
+```
+
+Ce fichier est une liste blanche : seules ces commandes déclarées sont exécutables, et `local_ping`
+liste celles qui sont disponibles.
+
 ## Garde-fous
 
 - **Confinement** : tout chemin est résolu et refusé s'il sort de la racine du dépôt.
@@ -155,15 +212,15 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 - **`.gitignore`** : respecté par défaut, contourné seulement pour une cible explicitement ignorée.
 - **Secrets** : `.env*`, `*.pem`, `*.key`, clés privées, `*credential*`, `*secret*`, dumps et sauvegardes
   ne sont jamais lus.
-- **Écritures** : un fichier modifié mais non committé, ou non suivi par git, n'est jamais réécrit sans
+- **Écritures** : transactionnelles par défaut (proposition relue puis application exacte vérifiée par
+  hash). Un fichier modifié mais non committé, ou non suivi par git, n'est jamais réécrit sans
   `allow_dirty`. Aucune commande destructrice n'est accessible, aucun `git reset`, aucune suppression de
   branche, aucun `git add` ni `git commit`.
-- **Validation d'écriture** : écriture atomique, puis `php -l` dans le conteneur. Toute réécriture vide,
-  identique, amputée de plus de moitié, plus que doublée ou ayant perdu son `<?php` est annulée et le
-  contenu d'origine restauré.
-- **Commandes** : seule une liste blanche de contrôles en lecture est exposée (`phpstan`, `phpunit`,
-  `cs-fixer` en dry-run, `twig`, `yaml`, `eslint`). Aucune cible écrivant en base ni construisant les
-  assets n'est atteignable.
+- **Validation d'écriture** : écriture atomique, puis contrôle syntaxique quand disponible. Toute
+  réécriture vide, identique, amputée de plus de moitié, plus que doublée ou ayant perdu son `<?php` est
+  annulée et le contenu d'origine restauré.
+- **Commandes** : seuls les contrôles en lecture déclarés par le preset ou `.local-agent.json` sont
+  exposés. Le fichier est une liste blanche, pas un shell : aucune autre commande n'est atteignable.
 - **Sortie bornée** : la lecture de la sortie de `rg` est plafonnée, et le rapport final est tronqué à
   `LOCAL_AGENT_MAX_OUTPUT_TOKENS`.
 
@@ -176,8 +233,8 @@ local_agent/
 ├── files.py     découverte ripgrep, garde-fous, lecture bornée, découpage en lots
 ├── shell.py     exécution de commandes en liste blanche, état du working tree
 ├── prompts.py   consignes, contrats de sortie, extraction JSON tolérante aux troncatures
-├── tasks.py     search, analyze, logs, check
-├── edit.py      réécriture de fichiers sous contrôle git
+├── tasks.py     search, analyze, logs, check, diff_review
+├── edit.py      propositions transactionnelles et réécriture sous contrôle git
 ├── report.py    rapport compact et clamp de sortie
 ├── cli.py       interface en ligne de commande
 └── mcp.py       serveur MCP stdio (JSON-RPC 2.0, sans dépendance)
@@ -248,13 +305,13 @@ donne un temps trompeusement bas. Ne comparer que des requêtes distinctes.
 - `search` dépend de la qualité des motifs déduits de la question. Quand le modèle devine des noms de
   symboles qui n'existent pas, un repli lexical prend le relais, mais avec moins de précision : préciser
   un `path` ou des `globs` améliore nettement le résultat.
-- **Une question française sur un code aux identifiants anglais peut n'avoir aucun pont lexical.**
-  « Quels répertoires les garde-fous refusent-ils » ne mène pas à `DENIED_DIRECTORIES` si le modèle ne
-  devine pas le terme anglais. Mesuré : les questions portant un identifiant, un nom de classe ou un
-  acronyme répondent juste, les questions purement descriptives échouent une fois sur deux. Nommer le
-  symbole quand on le connaît, ou viser un `path` plus étroit.
-- `local_fix` réécrit un fichier entier, ce qui le limite aux fichiers de moins de 40 000 caractères et
-  aux consignes réellement mécaniques.
-- Les contrôles projet passent par `docker compose exec`, donc Docker doit être démarré.
-- `php -l` est le seul contrôle syntaxique automatique. Sans Docker, l'écriture est acceptée sans
-  vérification de syntaxe.
+- **Une question française sur un code aux identifiants anglais dépend d'un pont lexical.** Plusieurs
+  mécanismes le construisent : traduction des notions par le modèle, adaptation au langage dominant du
+  dépôt, radicaux racinisés des identifiants proposés, seconde dérivation quand la moisson est maigre.
+  Il reste des questions purement descriptives qui échouent : nommer le symbole quand on le connaît, ou
+  viser un `path` plus étroit.
+- `local_fix` réécrit un fichier entier (via une proposition transactionnelle), ce qui le limite aux
+  fichiers de moins de 40 000 caractères et aux consignes réellement mécaniques.
+- Les contrôles du preset Symfony passent par `docker compose exec`, donc Docker doit être démarré.
+- `php -l` est le seul contrôle syntaxique automatique. Sans lui, l'écriture est acceptée sur la seule
+  vraisemblance du contenu.
