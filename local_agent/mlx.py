@@ -55,7 +55,7 @@ class MlxClient:
         except urllib.error.URLError as error:
             raise MlxError(
                 f"serveur MLX injoignable sur {self.config.base_url} ({error.reason}). "
-                "Vérifier que mlx-serve tourne et que MLX_BASE_URL est correct."
+                "Vérifier que le serveur local tourne et que LOCAL_LLM_BASE_URL est correct."
             ) from error
         except TimeoutError as error:
             raise MlxError(f"timeout après {timeout or self.config.timeout}s sur {path}") from error

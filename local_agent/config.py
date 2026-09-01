@@ -52,36 +52,48 @@ def load_env_file() -> None:
             os.environ[key] = value
 
 
+def _raw_env(*names: str) -> str:
+    """Première variable renseignée parmi les alias : LOCAL_LLM_* d'abord, MLX_* en rétrocompatibilité."""
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _int_env(name: str, default: int) -> int:
     try:
-        return int(os.environ.get(name, "").strip() or default)
+        return int(_raw_env(name, name.replace("LOCAL_LLM_", "MLX_")) or default)
     except ValueError:
         return default
 
 
 def _float_env(name: str, default: float) -> float:
     try:
-        return float(os.environ.get(name, "").strip() or default)
+        return float(_raw_env(name, name.replace("LOCAL_LLM_", "MLX_")) or default)
     except ValueError:
         return default
 
 
 def _str_env(name: str, default: str) -> str:
-    return (os.environ.get(name) or "").strip() or default
+    return _raw_env(name, name.replace("LOCAL_LLM_", "MLX_")) or default
 
 
 @dataclass
 class Config:
     repo_root: Path = field(default_factory=_repo_root)
 
-    base_url: str = field(default_factory=lambda: _str_env("MLX_BASE_URL", "http://127.0.0.1:11234/v1").rstrip("/"))
-    model: str = field(default_factory=lambda: _str_env("MLX_MODEL", "auto"))
-    api_key: str = field(default_factory=lambda: _str_env("MLX_API_KEY", ""))
+    # Tout serveur compatible OpenAI convient : mlx-serve, Ollama, llama.cpp, LM Studio, vLLM.
+    base_url: str = field(
+        default_factory=lambda: _str_env("LOCAL_LLM_BASE_URL", "http://127.0.0.1:11234/v1").rstrip("/")
+    )
+    model: str = field(default_factory=lambda: _str_env("LOCAL_LLM_MODEL", "auto"))
+    api_key: str = field(default_factory=lambda: _str_env("LOCAL_LLM_API_KEY", ""))
     # Une analyse n'a rien à gagner à varier. Sans rendre les réponses reproductibles pour autant : le
     # serveur ne suit pas le même chemin numérique selon que le prompt est traité à froid ou en cache.
-    temperature: float = field(default_factory=lambda: _float_env("MLX_TEMPERATURE", 0.0))
-    timeout: int = field(default_factory=lambda: _int_env("MLX_TIMEOUT", 300))
-    max_completion_tokens: int = field(default_factory=lambda: _int_env("MLX_MAX_TOKENS", 1600))
+    temperature: float = field(default_factory=lambda: _float_env("LOCAL_LLM_TEMPERATURE", 0.0))
+    timeout: int = field(default_factory=lambda: _int_env("LOCAL_LLM_TIMEOUT", 300))
+    max_completion_tokens: int = field(default_factory=lambda: _int_env("LOCAL_LLM_MAX_TOKENS", 1600))
 
     max_files: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_FILES", 40))
     max_file_size: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_FILE_SIZE", 120_000))
