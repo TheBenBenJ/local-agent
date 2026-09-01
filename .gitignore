@@ -13,4 +13,7 @@ tests/cases.local.json
 .idea/
 .vscode/
 .DS_Store
+# Données d'exécution personnelles : journal d'appels, cumuls, propositions de patch en attente
 usage.jsonl
+usage-totals.json
+patches/

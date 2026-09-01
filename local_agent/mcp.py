@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import edit, tasks
+from . import edit, shell, tasks
 from .config import Config, get_config
 from .files import GuardrailError, ensure_usable_root
 from .mlx import MlxClient, MlxError
@@ -91,20 +91,22 @@ TOOLS: list[dict] = [
     {
         "name": "local_fix",
         "description": (
-            "Applique une modification mécanique aux fichiers d'un chemin (renommage, boilerplate, docblocks, "
-            "erreurs simples). Le modèle local réécrit les fichiers sur disque. Garde-fous : les fichiers "
-            "non committés ou non suivis par git sont préservés, la syntaxe PHP est vérifiée et toute réécriture "
-            "invraisemblable est annulée. Vérifie ensuite `git diff` toi-même avant de valider. "
-            "À réserver aux changements mécaniques, jamais aux migrations sensibles ni à la sécurité."
+            "Modification mécanique des fichiers d'un chemin (renommage, boilerplate, docblocks, erreurs "
+            "simples), en deux temps par défaut : mode=propose (défaut) génère les changements, renvoie le "
+            "diff et un patch_id sans rien écrire ; mode=apply avec patch_id applique la proposition exacte, "
+            "refusée si un fichier a changé entre-temps. mode=direct écrit immédiatement, à réserver aux "
+            "changements triviaux. Garde-fous : fichiers non committés préservés, syntaxe vérifiée, "
+            "réécriture invraisemblable annulée. À réserver au mécanique, jamais aux migrations sensibles."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": _PATH,
                 "task": {"type": "string", "description": "Consigne de modification, précise et mécanique"},
+                "mode": {"type": "string", "enum": ["propose", "apply", "direct"], "default": "propose"},
+                "patch_id": {"type": "string", "description": "Identifiant renvoyé par un mode=propose"},
                 "globs": _GLOBS,
                 "max_files": {"type": "integer"},
-                "dry_run": {"type": "boolean", "default": False, "description": "N'écrit rien, liste les intentions"},
                 "allow_dirty": {
                     "type": "boolean",
                     "default": False,
@@ -112,26 +114,24 @@ TOOLS: list[dict] = [
                 },
                 "repo": _REPO,
             },
-            "required": ["path", "task"],
+            "required": [],
         },
     },
     {
         "name": "local_test_analysis",
         "description": (
-            "Exécute un contrôle du projet (phpstan, phpunit, cs-fixer, twig, yaml, eslint) dans le conteneur "
-            "Docker, filtre les succès répétitifs et ne renvoie que les échecs classés, les causes probables et "
-            "les statistiques. Aucune commande écrivante n'est accessible."
+            "Exécute un contrôle du projet (tests, lint, analyse statique), filtre les succès répétitifs et ne "
+            "renvoie que les échecs classés, les causes probables et les statistiques. Les contrôles disponibles "
+            "viennent du fichier .local-agent.json du dépôt ou d'un preset selon le langage (Symfony : phpstan, "
+            "phpunit, cs-fixer, twig, yaml, eslint ; Node : test, lint, types ; Python : pytest, ruff, mypy). "
+            "local_ping les liste. Aucune commande écrivante n'est accessible."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "kind": {
-                    "type": "string",
-                    "enum": ["phpstan", "phpunit", "cs-fixer", "twig", "yaml", "eslint"],
-                    "default": "phpstan",
-                },
-                "target": {"type": "string", "description": "Chemin ciblé, fortement recommandé pour phpunit"},
-                "filter": {"type": "string", "description": "Filtre PHPUnit sur le nom des tests"},
+                "kind": {"type": "string", "description": "Nom du contrôle, défaut : le premier disponible"},
+                "target": {"type": "string", "description": "Chemin ciblé, fortement recommandé pour les tests"},
+                "filter": {"type": "string", "description": "Filtre sur le nom des tests, si le contrôle l'accepte"},
                 "repo": _REPO,
             },
         },
@@ -181,9 +181,10 @@ TOOLS: list[dict] = [
 
 
 USAGE_LOG = Path.home() / ".local-agent" / "usage.jsonl"
+USAGE_TOTALS = Path.home() / ".local-agent" / "usage-totals.json"
 
 
-def _log_usage(tool: str, start: float, output_chars: int, *, error: bool) -> None:
+def _log_usage(tool: str, start: float, output_chars: int, *, error: bool, saved_chars: int = 0) -> None:
     """Journal d'appels pour mesurer les économies réelles, jamais bloquant pour la réponse."""
     try:
         entry = {
@@ -191,6 +192,7 @@ def _log_usage(tool: str, start: float, output_chars: int, *, error: bool) -> No
             "tool": tool,
             "duree_s": round(time.monotonic() - start, 1),
             "sortie_caracteres": output_chars,
+            "economise_caracteres": saved_chars,
             "erreur": error,
         }
         USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +200,24 @@ def _log_usage(tool: str, start: float, output_chars: int, *, error: bool) -> No
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass
+
+
+def _bump_totals(saved_chars: int) -> dict:
+    """Cumul de vie du serveur, persistant : c'est la preuve chiffrée de ce que l'outil rapporte."""
+    totals = {"calls": 0, "saved_chars": 0}
+    try:
+        if USAGE_TOTALS.is_file():
+            totals.update(json.loads(USAGE_TOTALS.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        pass
+    totals["calls"] = int(totals.get("calls") or 0) + 1
+    totals["saved_chars"] = int(totals.get("saved_chars") or 0) + saved_chars
+    try:
+        USAGE_TOTALS.parent.mkdir(parents=True, exist_ok=True)
+        USAGE_TOTALS.write_text(json.dumps(totals), encoding="utf-8")
+    except OSError:
+        pass
+    return totals
 
 
 def _with_repo(config: Config, arguments: dict) -> Config:
@@ -208,7 +228,8 @@ def _with_repo(config: Config, arguments: dict) -> Config:
     return replace(config, repo_root=Path(override).expanduser().resolve())
 
 
-def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) -> str:
+def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) -> tuple[str, int]:
+    """Rend le texte de réponse et l'estimation de contexte épargné à l'orchestrateur."""
     config = _with_repo(config, arguments)
     if name == "local_ping":
         try:
@@ -216,8 +237,17 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             root_state = "dépôt git valide"
         except GuardrailError as error:
             root_state = f"INUTILISABLE : {error}"
-        payload = {"mlx": client.ping(), "repo_root_state": root_state, "config": config.as_summary()}
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        try:
+            checks = sorted(shell.load_checks(config))
+        except ValueError as error:
+            checks = [f"illisibles : {error}"]
+        payload = {
+            "mlx": client.ping(),
+            "repo_root_state": root_state,
+            "checks_disponibles": checks,
+            "config": config.as_summary(),
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2), 0
 
     if name == "local_search":
         report = tasks.search(
@@ -243,21 +273,30 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             globs=arguments.get("globs"),
         )
     elif name == "local_fix":
-        report = edit.fix(
-            config,
-            client,
-            arguments.get("path"),
-            str(arguments["task"]),
-            globs=arguments.get("globs"),
-            max_files=arguments.get("max_files"),
-            dry_run=bool(arguments.get("dry_run")),
-            allow_dirty=bool(arguments.get("allow_dirty")),
-        )
+        mode = str(arguments.get("mode") or "propose")
+        if mode == "apply":
+            if not arguments.get("patch_id"):
+                raise ValueError("mode=apply exige patch_id, renvoyé par un mode=propose préalable")
+            report = edit.apply_patch(config, str(arguments["patch_id"]))
+        else:
+            if not arguments.get("task"):
+                raise ValueError("task est obligatoire en mode propose ou direct")
+            report = edit.fix(
+                config,
+                client,
+                arguments.get("path"),
+                str(arguments["task"]),
+                globs=arguments.get("globs"),
+                max_files=arguments.get("max_files"),
+                dry_run=bool(arguments.get("dry_run")),
+                allow_dirty=bool(arguments.get("allow_dirty")),
+                mode=mode,
+            )
     elif name == "local_test_analysis":
         report = tasks.check(
             config,
             client,
-            str(arguments.get("kind") or "phpstan"),
+            arguments.get("kind"),
             arguments.get("target"),
             arguments.get("filter"),
         )
@@ -276,7 +315,10 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
     else:
         raise ValueError(f"outil inconnu : {name}")
 
-    return render_markdown(report, config)
+    text = render_markdown(report, config)
+    source = report.stats.get("source_caracteres")
+    saved = max(0, int(source) - len(text)) if isinstance(source, int) else 0
+    return text, saved
 
 
 class Server:
@@ -284,6 +326,8 @@ class Server:
         self.config = get_config()
         self.client = MlxClient(self.config)
         self.protocol = DEFAULT_PROTOCOL
+        self.session_calls = 0
+        self.session_saved = 0
 
     def handle(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -322,8 +366,17 @@ class Server:
         arguments = params.get("arguments") or {}
         start = time.monotonic()
         try:
-            text = _handle_tool(name, arguments, self.config, self.client)
-            _log_usage(name, start, len(text), error=False)
+            text, saved = _handle_tool(name, arguments, self.config, self.client)
+            _log_usage(name, start, len(text), error=False, saved_chars=saved)
+            if name != "local_ping":
+                self.session_calls += 1
+                self.session_saved += saved
+                totals = _bump_totals(saved)
+                text += (
+                    f"\n\nÉconomie estimée : ~{saved // 4} tokens cet appel · "
+                    f"~{self.session_saved // 4} tokens sur {self.session_calls} appel(s) cette session · "
+                    f"~{totals['saved_chars'] // 4} tokens sur {totals['calls']} appel(s) au total."
+                )
             return self._result(identifier, {"content": [{"type": "text", "text": text}], "isError": False})
         except (GuardrailError, MlxError, ValueError, KeyError) as error:
             message = f"local-agent ({name}) a refusé ou échoué : {error}"

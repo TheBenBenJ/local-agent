@@ -553,7 +553,13 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
     report = _payload_to_report(
         "Recherche locale",
         payload,
-        stats={"patterns": len(patterns), "matches_kept": len(matches), "matches_total": total, "files": len(counts)},
+        stats={
+            "patterns": len(patterns),
+            "matches_kept": len(matches),
+            "matches_total": total,
+            "files": len(counts),
+            "source_caracteres": len(match_lines) + len(snippets),
+        },
     )
     report = _verify_paths(report, set(counts), config)
     return _flag_partial_sample(
@@ -646,7 +652,7 @@ def analyze(
             "files_analyzed": len(files),
             "files_found": total,
             "chunks": len(chunks),
-            "bytes": sum(item.size for item in files),
+            "source_caracteres": sum(item.size for item in files),
         },
     )
     report.errors = errors
@@ -725,7 +731,12 @@ def analyze_logs(
     report = _payload_to_report(
         "Analyse de logs",
         payload,
-        stats={"lines_matched": len(matches), "signatures": len(clusters), "patterns": len(used_patterns)},
+        stats={
+            "lines_matched": len(matches),
+            "signatures": len(clusters),
+            "patterns": len(used_patterns),
+            "source_caracteres": sum(len(match["text"]) for match in matches),
+        },
     )
     report = _verify_paths(report, {match["file"] for match in matches}, config)
     return _flag_partial_sample(
@@ -766,19 +777,28 @@ def _filter_command_output(kind: str, output: str, limit: int = 12_000) -> tuple
 def check(
     config: Config,
     client: MlxClient,
-    kind: str = "phpstan",
+    kind: str | None = None,
     target: str | None = None,
     filter_expression: str | None = None,
 ) -> Report:
     ensure_usable_root(config)
     if target:
         resolve_path(config, target)
-    argv = shell.build_check_command(kind, target, filter_expression)
-    spec = shell.CHECK_COMMANDS[kind]
+    checks = shell.load_checks(config)
+    if not checks:
+        raise ValueError(
+            f"aucun contrôle défini pour ce dépôt : déclarer des checks dans {shell.CHECKS_FILE} à la racine"
+        )
+    kind = kind or next(iter(checks))
+    argv, spec = shell.build_check_command(checks, kind, target, filter_expression)
     result = shell.run(argv, config.repo_root, config.command_timeout)
     filtered, stats = _filter_command_output(kind, result.output)
 
-    stats.update({"exit_code": result.exit_code, "timed_out": result.timed_out})
+    stats.update({
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "source_caracteres": len(result.output),
+    })
     base = Report(
         title=f"Contrôle local : {spec['label']}",
         stats=stats,
@@ -928,7 +948,7 @@ def diff_review(
     report = _payload_to_report(
         title,
         payload,
-        stats={"files": len(sections), "diff_chars": len(diff), "files_reviewed": len(packed)},
+        stats={"files": len(sections), "files_reviewed": len(packed), "source_caracteres": len(diff)},
     )
     report = _verify_paths(report, {name for name, _ in sections}, config)
     return _flag_partial_sample(

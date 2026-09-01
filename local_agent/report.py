@@ -66,12 +66,22 @@ def render_markdown(report: Report, config: Config) -> str:
     lines += _section("Prochaines actions", report.next_actions, limit=10)
     if report.errors:
         lines += _section("Échecs de l'agent local", report.errors)
-    if report.stats:
-        rendered = ", ".join(f"{key}={value}" for key, value in report.stats.items())
+    stats = dict(report.stats)
+    source_chars = stats.pop("source_caracteres", None)
+    if stats:
+        rendered = ", ".join(f"{key}={value}" for key, value in stats.items())
         lines += ["## Statistiques", rendered, ""]
     if report.details:
         lines += ["## Détails", report.details.strip(), ""]
-    return clamp("\n".join(lines).strip(), config)
+    text = "\n".join(lines).strip()
+    # Rendre l'économie visible à chaque appel : c'est la raison d'être de l'outil.
+    if isinstance(source_chars, int) and source_chars > len(text):
+        ratio = source_chars / max(1, len(text))
+        text += (
+            f"\n\nContexte évité : ~{source_chars} caractères examinés localement, "
+            f"rapport de {len(text)} caractères, compression ~{ratio:.0f}x."
+        )
+    return clamp(text, config)
 
 
 def render_json(report: Report, config: Config) -> str:
