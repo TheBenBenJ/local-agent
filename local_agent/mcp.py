@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import traceback
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import edit, tasks
@@ -153,11 +155,49 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "local_diff_review",
+        "description": (
+            "Passe en revue un diff git sans le charger dans ton contexte : le modèle local lit le diff, "
+            "signale bugs probables, restes de débogage et risques de régression, et propose un message de "
+            "commit. Périmètres : worktree (tout le non committé), staged (l'index), branch (écart avec la "
+            "branche de base). À privilégier dès qu'un diff dépasse quelques dizaines de lignes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "enum": ["worktree", "staged", "branch"], "default": "worktree"},
+                "base": {"type": "string", "description": "Branche de base pour scope=branch (défaut : main/master/develop)"},
+                "task": {"type": "string", "description": "Consigne de revue spécifique, sinon revue générale"},
+                "repo": _REPO,
+            },
+        },
+    },
+    {
         "name": "local_ping",
         "description": "Vérifie que le serveur MLX répond et affiche la configuration effective du local-agent.",
         "inputSchema": {"type": "object", "properties": {"repo": _REPO}},
     },
 ]
+
+
+USAGE_LOG = Path.home() / ".local-agent" / "usage.jsonl"
+
+
+def _log_usage(tool: str, start: float, output_chars: int, *, error: bool) -> None:
+    """Journal d'appels pour mesurer les économies réelles, jamais bloquant pour la réponse."""
+    try:
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "tool": tool,
+            "duree_s": round(time.monotonic() - start, 1),
+            "sortie_caracteres": output_chars,
+            "erreur": error,
+        }
+        USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with USAGE_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def _with_repo(config: Config, arguments: dict) -> Config:
@@ -225,6 +265,14 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
         report = tasks.analyze_logs(
             config, client, str(arguments["path"]), arguments.get("task"), arguments.get("patterns")
         )
+    elif name == "local_diff_review":
+        report = tasks.diff_review(
+            config,
+            client,
+            scope=str(arguments.get("scope") or "worktree"),
+            base=arguments.get("base"),
+            task=arguments.get("task"),
+        )
     else:
         raise ValueError(f"outil inconnu : {name}")
 
@@ -272,14 +320,17 @@ class Server:
     def _call(self, identifier, params: dict) -> dict:
         name = str(params.get("name") or "")
         arguments = params.get("arguments") or {}
+        start = time.monotonic()
         try:
             text = _handle_tool(name, arguments, self.config, self.client)
+            _log_usage(name, start, len(text), error=False)
             return self._result(identifier, {"content": [{"type": "text", "text": text}], "isError": False})
         except (GuardrailError, MlxError, ValueError, KeyError) as error:
             message = f"local-agent ({name}) a refusé ou échoué : {error}"
         except Exception as error:  # noqa: BLE001
             print(traceback.format_exc(), file=sys.stderr)
             message = f"local-agent ({name}) erreur interne : {type(error).__name__} {error}"
+        _log_usage(name, start, len(message), error=True)
         return self._result(
             identifier,
             {"content": [{"type": "text", "text": clamp(message, self.config)}], "isError": True},

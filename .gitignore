@@ -13,3 +13,4 @@ tests/cases.local.json
 .idea/
 .vscode/
 .DS_Store
+usage.jsonl

@@ -59,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--target", default=None)
     check.add_argument("--filter", dest="filter_expression", default=None)
 
+    diff = subparsers.add_parser("diff", help="revue d'un diff git avec proposition de message de commit")
+    diff.add_argument("scope", nargs="?", default="worktree", choices=sorted(tasks.DIFF_SCOPES))
+    diff.add_argument("--base", default=None, help="branche de base pour scope=branch")
+    diff.add_argument("--task", default=None)
+
     return parser
 
 
@@ -114,6 +119,8 @@ def _dispatch(arguments: argparse.Namespace, config, client: MlxClient) -> Repor
         )
     if command == "check":
         return tasks.check(config, client, arguments.kind, arguments.target, arguments.filter_expression)
+    if command == "diff":
+        return tasks.diff_review(config, client, scope=arguments.scope, base=arguments.base, task=arguments.task)
     raise ValueError(f"commande inconnue : {command}")
 
 

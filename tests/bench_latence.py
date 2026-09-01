@@ -41,7 +41,7 @@ def phases(repo: Path, query: str, path: str) -> dict[str, float]:
     client = MlxClient(config)
     target = resolve_path(config, path)
 
-    patterns, derivation = timed(_select_patterns, config, client, query, target, None)
+    (patterns, _), derivation = timed(_select_patterns, config, client, query, target, None)
     (matches, total), grepping = timed(grep, config, target, patterns, balance_by_file=True)
     snippets, windowing = timed(_snippet_context, config, matches, config.chunk_chars)
 

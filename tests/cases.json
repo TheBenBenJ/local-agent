@@ -45,6 +45,7 @@
       {"outil": "local_review", "arguments": {"path": "local_agent/budget.py"}},
       {"outil": "local_analyze", "arguments": {"path": "local_agent/report.py", "mode": "summarize"}},
       {"outil": "local_fix", "arguments": {"path": "local_agent/budget.py", "task": "aucune modification à faire", "dry_run": true}},
+      {"outil": "local_diff_review", "arguments": {"scope": "worktree"}},
       {"outil": "local_analyze", "arguments": {"path": "../../etc", "task": "confinement"}}
     ]
   },

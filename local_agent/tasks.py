@@ -10,6 +10,7 @@ from pathlib import Path
 from . import budget, prompts, shell
 from .config import Config
 from .files import (
+    DECLARATION,
     balanced_sample,
     build_chunks,
     count_matches,
@@ -198,14 +199,50 @@ def _fallback_patterns(query: str) -> list[str]:
     return [rf"\b{word}\b" for word in kept[:6]] or [re.escape(query[:40])]
 
 
-def _derive_patterns(client: MlxClient, query: str) -> list[str]:
+_FLAVOR_BY_EXTENSION = {
+    "php": "un dépôt Symfony/PHP (identifiants camelCase, classes en PascalCase, clés de configuration YAML)",
+    "py": "un dépôt Python (fonctions et variables snake_case, constantes en MAJUSCULES_SOULIGNÉES)",
+    "ts": "un dépôt TypeScript (identifiants camelCase, types en PascalCase)",
+    "js": "un dépôt JavaScript (identifiants camelCase)",
+}
+
+_flavor_cache: dict[str, str] = {}
+
+
+def _repo_flavor(config: Config) -> str:
+    """Le langage dominant se lit dans les fichiers suivis, les fichiers marqueurs étant souvent absents."""
+    key = str(config.repo_root)
+    if key not in _flavor_cache:
+        listing = shell.git(config, ["ls-files"], timeout=30)
+        tally = Counter(
+            suffix for line in listing.stdout.splitlines()
+            if (suffix := Path(line).suffix.lstrip(".").lower()) in _FLAVOR_BY_EXTENSION
+        )
+        dominant = tally.most_common(1)
+        _flavor_cache[key] = (
+            _FLAVOR_BY_EXTENSION[dominant[0][0]] if dominant
+            else "un dépôt de code (identifiants anglais, conventions du langage dominant)"
+        )
+    return _flavor_cache[key]
+
+
+def _derive_patterns(client: MlxClient, query: str, flavor: str, avoid: list[str] | None = None) -> list[str]:
+    avoid_hint = (
+        f"Motifs déjà essayés sans succès, proposes-en d'autres : {', '.join(avoid)}.\n" if avoid else ""
+    )
     prompt = (
         "Transforme cette question en 3 à 5 expressions régulières ripgrep permettant de localiser le code "
-        "concerné dans un dépôt Symfony/PHP dont le vocabulaire métier est français : noms de classes, de "
-        "méthodes, de routes, termes métier.\n"
-        "Contraintes : exactement 3 à 5 motifs, chacun tenant en un mot ou une expression courte, sans "
-        "variantes spéculatives ni énumération de synonymes.\n"
-        f"Question : {query}\n\n"
+        f"concerné dans {flavor}, dont le vocabulaire métier est français : noms de classes, de méthodes, "
+        "de constantes, de clés de configuration, termes métier.\n"
+        "Les identifiants du code sont en anglais : traduis les notions françaises de la question en "
+        "identifiants anglais probables (« propriété » donne property, « connexion » donne connection).\n"
+        "Des radicaux courts et sûrs valent mieux que des identifiants complets inventés : delegat plutôt "
+        "que shouldDelegateToModel.\n"
+        "Contraintes : exactement 3 à 5 motifs, chacun tenant en un mot ou une expression courte, un seul "
+        "concept par motif, jamais deux notions collées dans le même motif, sans variantes spéculatives ni "
+        "énumération de synonymes.\n"
+        + avoid_hint
+        + f"Question : {query}\n\n"
         'Réponds uniquement par {"patterns": ["...", "..."]}'
     )
     # Température nulle : un motif qui varie d'un appel à l'autre fait varier la réponse entière.
@@ -226,6 +263,32 @@ def _derive_patterns(client: MlxClient, query: str) -> list[str]:
         patterns.append(candidate)
 
     return patterns[:5] or _fallback_patterns(query)
+
+
+_SUFFIXES = ("ations", "ation", "ings", "ing", "ions", "ion", "ers", "er", "ies", "es", "ed", "e", "s")
+_GENERIC_PARTS = {"should", "would", "could", "check", "get", "set", "has", "is", "to", "for", "with", "from"}
+
+
+def _stem(word: str) -> str:
+    for suffix in _SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+            return word[: len(word) - len(suffix)]
+    return word
+
+
+def _radicals(patterns: list[str]) -> list[str]:
+    """Radicaux des identifiants proposés par le modèle, qui invente des noms complets là où le code
+    conjugue autrement : `shouldDelegate` rate `is_worth_delegating`, son radical `delegat` le trouve."""
+    found: list[str] = []
+    for pattern in patterns:
+        # Déplie les classes à deux casses avant découpe : sans cela `[Tt]imestamp` perd sa première lettre.
+        pattern = re.sub(r"\[([A-Za-z])[A-Za-z]?\]", r"\1", pattern)
+        for part in re.findall(r"[A-Za-z]{4,}", pattern):
+            for piece in re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])", part):
+                stem = _stem(piece.lower())
+                if len(stem) >= 4 and stem not in _GENERIC_PARTS and stem not in found:
+                    found.append(stem)
+    return found
 
 
 def _salient_terms(query: str) -> list[str]:
@@ -314,11 +377,14 @@ def _select_patterns(
     query: str,
     target: Path,
     globs: list[str] | None = None
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """Retient les motifs du domaine, et ne descend aux mots de la question qu'à défaut.
 
     Mélanger les deux noie le signal : sur « quelles classes portent l'attribut Referencable », le motif
     précis donne 8 correspondances dans 4 fichiers, que le mot « attribut » à lui seul dilue dans 140.
+
+    Renvoie aussi la valeur sémantique des motifs : ceux du repli lexical ne traduisent pas la question,
+    ils en recopient les mots, et leurs correspondances ne doivent jamais être rendues comme une réponse.
     """
     salient = _salient_terms(query)
 
@@ -332,29 +398,66 @@ def _select_patterns(
             if (count := count_matches(config, target, pattern, globs=globs))
         ]
         if anchored and sum(count for _, count in anchored) <= budget.PASSTHROUGH_MATCHES:
-            return [pattern for pattern, _ in anchored]
+            return [pattern for pattern, _ in anchored], True
 
     # Hors raccourci, la dérivation reste systématique : un terme salient productif ne suffit pas
     # toujours, le pivot pouvant être un nom commun que seul le modèle traduit en identifiant anglais
     # (« connexions » vers connections). Mesuré : sauter la dérivation a coûté une réponse fausse sur dix.
-    cheap = list(dict.fromkeys(salient + _structural_patterns(query)))
-    counted_cheap = [
+    structural = _structural_patterns(query)
+    cheap = list(dict.fromkeys(salient + structural))
+    counted_salient = [
         (pattern, count)
-        for pattern in cheap
+        for pattern in salient
         if (count := count_matches(config, target, pattern, globs=globs))
     ]
-    derived = [pattern for pattern in _derive_patterns(client, query) if pattern not in cheap]
+    flavor = _repo_flavor(config)
+    derived = [pattern for pattern in _derive_patterns(client, query, flavor) if pattern not in cheap]
     counted_derived = [
         (pattern, count)
         for pattern in derived
         if (count := count_matches(config, target, pattern, globs=globs))
     ]
-    if counted_derived or counted_cheap:
-        return _trim_to_capacity(counted_derived + counted_cheap, config.max_matches)
+
+    # Moisson maigre : la dérivation varie d'un appel à l'autre et un tirage faible produit une réponse
+    # faible. Les radicaux des identifiants proposés, puis une seconde passe écartant les motifs
+    # stériles, récupèrent souvent le motif manquant.
+    if len(counted_derived) + len(counted_salient) < 2 or sum(c for _, c in counted_derived) < 10:
+        seen = {pattern for pattern, _ in counted_derived}
+        # Un radical trop productif ne secourt rien : il noierait l'échantillon qu'il devait renforcer.
+        counted_derived += [
+            (stem, count)
+            for stem in _radicals(derived)
+            if stem not in seen
+            and 0 < (count := count_matches(config, target, stem, globs=globs)) <= budget.PASSTHROUGH_MATCHES
+        ]
+    if len(counted_derived) + len(counted_salient) < 2 or sum(c for _, c in counted_derived) < 10:
+        retry = [
+            pattern for pattern in _derive_patterns(client, query, flavor, avoid=derived)
+            if pattern not in cheap and pattern not in derived
+        ]
+        counted_derived += [
+            (pattern, count)
+            for pattern in retry
+            if (count := count_matches(config, target, pattern, globs=globs))
+        ]
+
+    if counted_derived or counted_salient:
+        # Un motif structurel ne vient qu'en appoint de motifs porteurs de sens déjà productifs : seul ou
+        # adossé à des motifs quasi stériles, il ramène toutes les déclarations du dépôt et noie la question.
+        counted_structural = (
+            [
+                (pattern, count)
+                for pattern in structural
+                if (count := count_matches(config, target, pattern, globs=globs))
+            ]
+            if sum(c for _, c in counted_derived + counted_salient) >= 10 else []
+        )
+        combined = counted_derived + counted_salient + counted_structural
+        return _trim_to_capacity(combined, config.max_matches), True
 
     weak = [term for term in _fallback_patterns(query) if term.lower() not in {item.lower() for item in cheap}]
     productive_weak = [pattern for pattern in weak if count_matches(config, target, pattern, globs=globs)]
-    return productive_weak or derived + cheap + weak
+    return (productive_weak, False) if productive_weak else (derived + cheap + weak, False)
 
 
 def _snippet_context(config: Config, matches: list[dict], budget: int) -> str:
@@ -380,7 +483,11 @@ def _snippet_context(config: Config, matches: list[dict], budget: int) -> str:
         windows: list[tuple[int, int]] = []
         # Les lignes arrivent déjà réparties sur le fichier : les re-trier avant de tronquer ramènerait à l'en-tête.
         for line in sorted(dict.fromkeys(lines[:5])):
-            start, end = max(1, line - 12), min(len(content), line + 18)
+            # Une déclaration mérite son corps : sans lui, le modèle ne peut pas dire ce que la
+            # classe ou le trait fournit, seulement qu'il existe.
+            is_declaration = line <= len(content) and DECLARATION.search(content[line - 1])
+            start = max(1, line - 12)
+            end = min(len(content), line + (48 if is_declaration else 18))
             if windows and start <= windows[-1][1] + 5:
                 windows[-1] = (windows[-1][0], end)
             else:
@@ -397,7 +504,7 @@ def _snippet_context(config: Config, matches: list[dict], budget: int) -> str:
 
 def search(config: Config, client: MlxClient, query: str, path: str | None = None, globs: list[str] | None = None) -> Report:
     target = resolve_path(config, path)
-    patterns = _select_patterns(config, client, query, target, globs)
+    patterns, semantic = _select_patterns(config, client, query, target, globs)
     matches, total = grep(config, target, patterns, globs=globs, balance_by_file=True)
 
     if not matches:
@@ -414,7 +521,9 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
     match_lines = "\n".join(f"{m['file']}:{m['line']}: {m['text']}" for m in shown)
 
     # Peu de correspondances : les lignes brutes répondent déjà, exhaustivement et sans risque d'omission.
-    if total <= budget.PASSTHROUGH_MATCHES and not budget.is_worth_delegating(match_lines):
+    # Réservé aux motifs sémantiques : celles du repli lexical recopient les mots de la question et
+    # produiraient un brut hors sujet rendu avec l'assurance d'une réponse.
+    if semantic and total <= budget.PASSTHROUGH_MATCHES and not budget.is_worth_delegating(match_lines):
         return budget.passthrough(
             "Recherche locale",
             match_lines,
@@ -717,3 +826,112 @@ def check(
     report = _payload_to_report(base.title, payload, stats=stats)
     report.details = base.details
     return report
+
+
+DIFF_SCOPES: dict[str, list[str]] = {
+    "worktree": ["diff", "HEAD"],
+    "staged": ["diff", "--staged"],
+    "branch": ["diff"],
+}
+
+
+def _resolve_diff_args(config: Config, scope: str, base: str | None) -> list[str]:
+    if scope not in DIFF_SCOPES:
+        raise ValueError(f"périmètre inconnu : {scope}. Disponibles : {', '.join(sorted(DIFF_SCOPES))}")
+    args = list(DIFF_SCOPES[scope])
+    if scope == "branch":
+        reference = base or next(
+            (name for name in ("main", "master", "develop")
+             if shell.git(config, ["rev-parse", "--verify", "--quiet", name]).exit_code == 0),
+            None
+        )
+        if not reference:
+            raise ValueError("aucune branche de base trouvée (main, master, develop) : préciser base")
+        args.append(f"{reference}...HEAD")
+    return args
+
+
+def _split_diff_by_file(diff: str) -> list[tuple[str, str]]:
+    sections: list[tuple[str, str]] = []
+    for block in re.split(r"(?m)^(?=diff --git )", diff):
+        if not block.strip():
+            continue
+        header = block.splitlines()[0]
+        found = re.search(r" b/(.+)$", header)
+        sections.append((found.group(1) if found else header, block))
+    return sections
+
+
+def diff_review(
+    config: Config,
+    client: MlxClient,
+    scope: str = "worktree",
+    base: str | None = None,
+    task: str | None = None,
+) -> Report:
+    ensure_usable_root(config)
+    args = _resolve_diff_args(config, scope, base)
+    result = shell.git(config, [*args, "--no-color"], timeout=config.command_timeout)
+    if result.exit_code != 0:
+        raise ValueError(f"git {' '.join(args)} a échoué : {result.stderr.strip()[:300]}")
+    diff = result.stdout
+    title = f"Revue de diff ({scope})"
+
+    if not diff.strip():
+        return Report(
+            title=title,
+            summary=f"Aucun changement dans le périmètre {scope}.",
+            stats={"files": 0},
+            next_actions=["Vérifier le périmètre : worktree, staged, ou branch avec base"],
+        )
+
+    sections = _split_diff_by_file(diff)
+
+    # Un diff court se lit tel quel : la revue par le modèle ne vaut que sur du volume.
+    if not budget.is_worth_delegating(diff, budget.PASSTHROUGH_CONTENT_CHARS):
+        return budget.passthrough(
+            title,
+            diff.strip(),
+            reason=f"diff de {len(diff.strip())} caractères, plus court qu'une revue",
+            stats={"files": len(sections)},
+        )
+
+    # Les plus gros changements d'abord : si le budget de contexte force des omissions, elles
+    # portent sur les fichiers les moins modifiés.
+    sections.sort(key=lambda item: len(item[1]), reverse=True)
+    packed: list[str] = []
+    used = 0
+    omitted: list[str] = []
+    for name, block in sections:
+        if used + len(block) > config.chunk_chars * 2:
+            omitted.append(name)
+            continue
+        if len(block) > config.chunk_chars:
+            block = block[: config.chunk_chars].rsplit("\n", 1)[0] + "\n[... fichier tronqué ...]\n"
+        packed.append(block)
+        used += len(block)
+
+    instruction = (
+        task or (
+            "Fais une revue de ces changements : bugs probables, cas limites oubliés, restes de débogage, "
+            "incohérences avec le code environnant visible dans le diff, risques de régression. "
+            "Ignore le style cosmétique."
+        )
+    ) + " Ajoute en dernière ligne de next_actions une proposition de message de commit préfixée « Commit : »."
+    prompt = (
+        f"Consigne : {instruction}\n\n"
+        f"Diff git ({scope}, {len(sections)} fichiers) :\n\n"
+        + "".join(packed)
+        + "\n\n" + prompts.JSON_CONTRACT
+    )
+    payload = _ask(client, prompts.SYSTEM_ANALYST, prompt)
+    report = _payload_to_report(
+        title,
+        payload,
+        stats={"files": len(sections), "diff_chars": len(diff), "files_reviewed": len(packed)},
+    )
+    report = _verify_paths(report, {name for name, _ in sections}, config)
+    return _flag_partial_sample(
+        report,
+        [f"{len(omitted)} fichiers non examinés faute de place : {', '.join(omitted[:5])}" if omitted else ""]
+    )

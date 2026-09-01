@@ -35,6 +35,21 @@ curl -s http://127.0.0.1:11234/v1/models | head -c 200
 `MLX_MODEL=auto` sélectionne automatiquement le modèle déjà chargé côté serveur, il n'y a donc rien à
 changer ici en cas de bascule de modèle.
 
+### Choix du modèle
+
+Banc comparatif sur les mêmes épreuves (dérivation de motifs, synthèses, JSON difficile), à code
+identique, sur une machine 48 Go :
+
+| Modèle                               | Exactitude | Banc de 15 tours | Observation                                        |
+| ------------------------------------ | ---------- | ---------------- | -------------------------------------------------- |
+| Qwen3.6-35B-A3B 4-bit (20 Go)        | 15/15      | 43 s             | Motifs dérivés plus sélectifs, réponses plus courtes |
+| Ornith-1.5-35B-A3B 4-bit (19,5 Go)   | 14/15      | 98 s             | Modèle « reasoning », plus lent, moins déterministe  |
+| Gemma-4-26B-A4B 8-bit (28 Go)        | non chargé | non chargé       | Refusé par le garde-fou mémoire du serveur           |
+
+Un modèle MoE non-reasoning d'environ 20 Go est le bon profil : les tâches du local-agent sont de la
+synthèse encadrée, la réflexion préalable coûte des secondes sans gagner en justesse. Permuter se fait
+sans redémarrage : `POST /v1/unload-model` puis `POST /v1/load-model {"model": "..."}`.
+
 ## Emplacement et périmètre
 
 Tout vit dans `~/.local-agent/`, hors de tout dépôt git : rien n'est versionné et rien n'est partagé avec
@@ -68,11 +83,15 @@ Redémarrer le client après toute modification de ces fichiers.
 | `local_fix`          | Modification mécanique écrite sur disque                     | `path`, `task`, `globs`, `dry_run`, `allow_dirty`      |
 | `local_test_analysis`| Contrôle projet filtré et synthétisé                         | `kind`, `target`, `filter`                             |
 | `local_log_analysis` | Analyse de logs volumineux                                   | `path`, `task`, `patterns`                             |
+| `local_diff_review`  | Revue d'un diff git avec message de commit proposé            | `scope`, `base`, `task`                                |
 | `local_ping`         | Diagnostic de connexion, racine résolue et configuration      | aucun                                                  |
 
 Tous les outils acceptent en plus un paramètre optionnel `repo`, chemin absolu du dépôt à analyser, qui
 prime sur la racine configurée. `local_ping` affiche la racine effective et signale explicitement une
 racine inutilisable.
+
+Chaque appel MCP est journalisé dans `~/.local-agent/usage.jsonl` (outil, durée, taille de sortie,
+erreur éventuelle) : de quoi mesurer sur la durée ce que la délégation rapporte réellement.
 
 ## Utilisation en ligne de commande
 
@@ -96,6 +115,10 @@ racine inutilisable.
 ~/.local-agent/bin/local-agent check phpunit --target tests/Unit/Services/ContratTravail
 ~/.local-agent/bin/local-agent check cs-fixer --target src
 ~/.local-agent/bin/local-agent check eslint
+
+~/.local-agent/bin/local-agent diff              # tout le non committé (worktree)
+~/.local-agent/bin/local-agent diff staged
+~/.local-agent/bin/local-agent diff branch --base main
 ```
 
 `--json` remplace le rendu markdown par le rapport JSON brut.
