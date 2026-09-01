@@ -81,6 +81,11 @@ def _payload_to_report(title: str, payload: dict, *, stats: dict | None = None) 
     )
 
 
+def _looks_like_raw_json(summary: str) -> bool:
+    stripped = summary.lstrip()
+    return stripped.startswith("{") or '"summary"' in stripped
+
+
 def _ask(
     client: MlxClient,
     system: str,
@@ -90,7 +95,20 @@ def _ask(
     temperature: float | None = None
 ) -> dict:
     completion = client.complete(prompt, system, max_tokens=max_tokens, temperature=temperature)
-    return prompts.extract_json(completion.text)
+    payload = prompts.extract_json(completion.text)
+    # Un résumé qui ressemble à du JSON signale une extraction échouée malgré les réparations : une
+    # relance coûte quelques secondes, un rapport illisible coûte l'appel entier.
+    if _looks_like_raw_json(str(payload.get("summary") or "")):
+        retried = client.complete(
+            prompt + "\n\nRappel strict : un unique objet JSON valide et refermé, sans aucun texte autour.",
+            system,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        candidate = prompts.extract_json(retried.text)
+        if not _looks_like_raw_json(str(candidate.get("summary") or "")):
+            return candidate
+    return payload
 
 
 _STOP_WORDS = {
@@ -103,6 +121,44 @@ _STOP_WORDS = {
     "etre", "avoir", "quand", "pourquoi", "projet", "depot", "faut", "stockent", "fournit", "portent",
     "definit", "empeche", "appelle", "utilisent", "renvoie", "retourne",
 }
+
+
+_LOCATION_SHAPE = re.compile(r"^([\w./-]+)(.*)$")
+
+
+def _verify_paths(report: Report, known: set[str], config: Config) -> Report:
+    """Corrige ou signale les chemins recopiés par le modèle, qui se corrompent parfois en génération.
+
+    Observé : `Supervion` pour `Supervision` dans un chemin par ailleurs juste. Le nom de fichier survit
+    mieux que le répertoire, donc un basename retrouvé dans les fichiers réellement lus fait foi.
+    """
+    by_basename: dict[str, list[str]] = defaultdict(list)
+    for relative in known:
+        by_basename[Path(relative).name].append(relative)
+
+    def repair(candidate: str) -> tuple[str, bool]:
+        cleaned = candidate.strip().lstrip("/")
+        if cleaned in known or (config.repo_root / cleaned).exists():
+            return cleaned, True
+        replacements = by_basename.get(Path(cleaned).name, [])
+        if len(replacements) == 1:
+            return replacements[0], True
+        return cleaned, False
+
+    def repair_list(items: list[str]) -> list[str]:
+        result = []
+        for item in items:
+            shaped = _LOCATION_SHAPE.match(item.strip())
+            if not shaped:
+                result.append(item)
+                continue
+            path, trusted = repair(shaped.group(1))
+            result.append(path + shaped.group(2) if trusted else f"{item} [chemin non vérifié]")
+        return result
+
+    report.files = repair_list(report.files)
+    report.locations = repair_list(report.locations)
+    return report
 
 
 def _flag_partial_sample(report: Report, omissions: list[str]) -> Report:
@@ -178,6 +234,29 @@ def _salient_terms(query: str) -> list[str]:
     return [word for word in words if word[0].isupper() or word.isupper()]
 
 
+# « comment » et « pourquoi » demandent une explication, que des lignes brutes ne donnent pas.
+_ENUMERATION = re.compile(r"\b(quels?|quelles?|o[uù]|listez?|combien|which|where|list)\b", re.IGNORECASE)
+_EXPLANATION = re.compile(r"\b(comment|pourquoi|how|why)\b", re.IGNORECASE)
+
+
+def _is_enumeration(query: str) -> bool:
+    return bool(_ENUMERATION.search(query)) and not _EXPLANATION.search(query)
+
+
+def _anchored_variants(term: str) -> list[str]:
+    """Motifs qui désignent l'usage ou la déclaration d'un symbole, pas ses simples mentions.
+
+    Sur « quelles classes portent l'attribut Referencable », le terme nu ramène 168 lignes dont les
+    imports, quand `#\\[Referencable` ramène exactement les classes qui le portent.
+    """
+    escaped = re.escape(term)
+    return [
+        rf"#\[{escaped}\b",
+        rf"^\s*(?:final\s+|abstract\s+|readonly\s+)*(?:class|trait|interface|enum)\s+{escaped}\b",
+        rf"function\s+{escaped}\s*\("
+    ]
+
+
 # Couvre les deux langages du poste : `def nom` en Python, `function nom` en PHP avec ses modificateurs.
 FUNCTION_DECLARATION = r"^\s*(?:def|(?:public\s+|private\s+|protected\s+|static\s+|final\s+|abstract\s+)*function)\s+\w+"
 
@@ -213,6 +292,22 @@ def _structural_patterns(query: str) -> list[str]:
     return found
 
 
+def _trim_to_capacity(counted: list[tuple[str, int]], capacity: int) -> list[str]:
+    """Écarte les motifs les plus larges quand ils noieraient les plus précis sous le plafond de grep.
+
+    Un motif structurel (toute déclaration de classe) peut ramener des milliers de lignes : additionné à
+    un motif précis, il consomme le plafond et dilue le signal que le motif précis portait.
+    """
+    kept: list[str] = []
+    cumulative = 0
+    for pattern, count in sorted(counted, key=lambda item: item[1]):
+        if kept and cumulative + count > capacity:
+            break
+        kept.append(pattern)
+        cumulative += count
+    return kept
+
+
 def _select_patterns(
     config: Config,
     client: MlxClient,
@@ -225,17 +320,41 @@ def _select_patterns(
     Mélanger les deux noie le signal : sur « quelles classes portent l'attribut Referencable », le motif
     précis donne 8 correspondances dans 4 fichiers, que le mot « attribut » à lui seul dilue dans 140.
     """
-    strong = list(
-        dict.fromkeys(_derive_patterns(client, query) + _salient_terms(query) + _structural_patterns(query))
-    )
-    weak = [term for term in _fallback_patterns(query) if term.lower() not in {item.lower() for item in strong}]
+    salient = _salient_terms(query)
 
-    productive_strong = [pattern for pattern in strong if count_matches(config, target, pattern, globs=globs)]
-    if productive_strong:
-        return productive_strong
+    # Énumération sur un symbole nommé : les lignes ancrées SONT la réponse, exhaustive et sans modèle.
+    # Mesuré : 9,6x moins cher qu'une synthèse pour la même réponse, en une seconde au lieu de neuf.
+    if salient and _is_enumeration(query):
+        anchored = [
+            (pattern, count)
+            for term in salient
+            for pattern in _anchored_variants(term)
+            if (count := count_matches(config, target, pattern, globs=globs))
+        ]
+        if anchored and sum(count for _, count in anchored) <= budget.PASSTHROUGH_MATCHES:
+            return [pattern for pattern, _ in anchored]
 
+    # Hors raccourci, la dérivation reste systématique : un terme salient productif ne suffit pas
+    # toujours, le pivot pouvant être un nom commun que seul le modèle traduit en identifiant anglais
+    # (« connexions » vers connections). Mesuré : sauter la dérivation a coûté une réponse fausse sur dix.
+    cheap = list(dict.fromkeys(salient + _structural_patterns(query)))
+    counted_cheap = [
+        (pattern, count)
+        for pattern in cheap
+        if (count := count_matches(config, target, pattern, globs=globs))
+    ]
+    derived = [pattern for pattern in _derive_patterns(client, query) if pattern not in cheap]
+    counted_derived = [
+        (pattern, count)
+        for pattern in derived
+        if (count := count_matches(config, target, pattern, globs=globs))
+    ]
+    if counted_derived or counted_cheap:
+        return _trim_to_capacity(counted_derived + counted_cheap, config.max_matches)
+
+    weak = [term for term in _fallback_patterns(query) if term.lower() not in {item.lower() for item in cheap}]
     productive_weak = [pattern for pattern in weak if count_matches(config, target, pattern, globs=globs)]
-    return productive_weak or strong + weak
+    return productive_weak or derived + cheap + weak
 
 
 def _snippet_context(config: Config, matches: list[dict], budget: int) -> str:
@@ -305,6 +424,13 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
         )
     snippets = _snippet_context(config, matches, budget=config.chunk_chars)
 
+    # Consigne d'exhaustivité réservée aux énumérations : le modèle conclut parfois sur le premier
+    # élément vu, alors même que la fenêtre d'extraits contenait les autres.
+    enumeration_hint = (
+        "La question demande une énumération : recense chaque élément distinct visible dans les extraits "
+        "avant de conclure, sans en omettre.\n"
+        if _is_enumeration(query) else ""
+    )
     prompt = (
         f"Question : {query}\n\n"
         f"Motifs ripgrep utilisés : {', '.join(patterns)}\n"
@@ -312,7 +438,7 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
         f"Correspondances brutes :\n{match_lines}\n\n"
         f"Extraits de code autour des correspondances :\n{snippets}\n\n"
         "Réponds à la question en t'appuyant uniquement sur ces éléments. Distingue le point d'entrée principal "
-        "des occurrences secondaires.\n\n" + prompts.JSON_CONTRACT
+        "des occurrences secondaires.\n" + enumeration_hint + "\n" + prompts.JSON_CONTRACT
     )
     payload = _ask(client, prompts.SYSTEM_ANALYST, prompt, temperature=0.0)
     report = _payload_to_report(
@@ -320,6 +446,7 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
         payload,
         stats={"patterns": len(patterns), "matches_kept": len(matches), "matches_total": total, "files": len(counts)},
     )
+    report = _verify_paths(report, set(counts), config)
     return _flag_partial_sample(
         report,
         [f"{len(matches)} correspondances examinées sur {total}" if len(matches) < total else ""]
@@ -418,6 +545,7 @@ def analyze(
         report.next_actions.append(
             f"{total - len(files)} fichiers non analysés (limite de {max_files or config.max_files} fichiers par appel)"
         )
+    report = _verify_paths(report, {item.relative for item in files}, config)
     return _flag_partial_sample(
         report,
         [
@@ -490,6 +618,7 @@ def analyze_logs(
         payload,
         stats={"lines_matched": len(matches), "signatures": len(clusters), "patterns": len(used_patterns)},
     )
+    report = _verify_paths(report, {match["file"] for match in matches}, config)
     return _flag_partial_sample(
         report,
         [
