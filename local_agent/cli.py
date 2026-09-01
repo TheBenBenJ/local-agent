@@ -46,16 +46,20 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--task", default=None)
     logs.add_argument("--pattern", action="append", dest="patterns")
 
-    fix = subparsers.add_parser("fix", help="applique une correction mécanique via le modèle local")
+    fix = subparsers.add_parser("fix", help="propose une correction mécanique (mode propose par défaut)")
     fix.add_argument("path")
     fix.add_argument("--task", required=True)
+    fix.add_argument("--mode", choices=["propose", "direct"], default="propose")
     fix.add_argument("--glob", action="append", dest="globs")
     fix.add_argument("--max-files", type=int, default=None)
     fix.add_argument("--dry-run", action="store_true")
     fix.add_argument("--allow-dirty", action="store_true")
 
+    apply_parser = subparsers.add_parser("apply", help="applique une proposition figée par fix")
+    apply_parser.add_argument("patch_id")
+
     check = subparsers.add_parser("check", help="exécute un contrôle projet et en synthétise la sortie")
-    check.add_argument("kind", nargs="?", default="phpstan")
+    check.add_argument("kind", nargs="?", default=None, help="nom du contrôle, défaut : le premier disponible")
     check.add_argument("--target", default=None)
     check.add_argument("--filter", dest="filter_expression", default=None)
 
@@ -116,7 +120,10 @@ def _dispatch(arguments: argparse.Namespace, config, client: MlxClient) -> Repor
             max_files=arguments.max_files,
             dry_run=arguments.dry_run,
             allow_dirty=arguments.allow_dirty,
+            mode=arguments.mode,
         )
+    if command == "apply":
+        return edit.apply_patch(config, arguments.patch_id)
     if command == "check":
         return tasks.check(config, client, arguments.kind, arguments.target, arguments.filter_expression)
     if command == "diff":

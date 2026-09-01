@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
 import os
 import tempfile
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import prompts, shell
@@ -15,6 +19,97 @@ from .report import Report
 
 
 LINT_FAILURE_MARKERS = ("Parse error", "syntax error", "Errors parsing", "Fatal error")
+
+PATCH_DIR = Path.home() / ".local-agent" / "patches"
+PATCH_RETENTION_SECONDS = 7 * 24 * 3600
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _prune_patches() -> None:
+    try:
+        for bundle in PATCH_DIR.glob("*.json"):
+            if time.time() - bundle.stat().st_mtime > PATCH_RETENTION_SECONDS:
+                bundle.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _persist_bundle(config: Config, task: str, proposals: list[dict]) -> str:
+    """Fige la proposition sur disque : l'application n'écrira que ce contenu exact, vérifié par hash."""
+    PATCH_DIR.mkdir(parents=True, exist_ok=True)
+    _prune_patches()
+    body = json.dumps(proposals, ensure_ascii=False, sort_keys=True)
+    identifier = _sha256(body)[:12]
+    payload = {
+        "id": identifier,
+        "integrity": _sha256(body),
+        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "repo": str(config.repo_root),
+        "task": task,
+        "files": proposals,
+    }
+    (PATCH_DIR / f"{identifier}.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    return identifier
+
+
+def apply_patch(config: Config, patch_id: str) -> Report:
+    """Applique une proposition figée, en refusant toute source modifiée entre-temps."""
+    bundle_path = PATCH_DIR / f"{patch_id}.json"
+    if not bundle_path.is_file():
+        raise ValueError(f"proposition inconnue : {patch_id}. Relancer un mode propose.")
+    payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+    body = json.dumps(payload["files"], ensure_ascii=False, sort_keys=True)
+    if _sha256(body) != payload["integrity"]:
+        raise ValueError(f"proposition {patch_id} corrompue : intégrité invalide, ne pas appliquer.")
+    if str(config.repo_root) != payload["repo"]:
+        raise ValueError(
+            f"proposition {patch_id} établie pour {payload['repo']}, pas pour {config.repo_root}."
+        )
+
+    changes: list[str] = []
+    risks: list[str] = []
+    touched: list[str] = []
+    for entry in payload["files"]:
+        target = (config.repo_root / entry["path"]).resolve()
+        try:
+            current, _ = read_text(target, config.fix_max_file_size * 3)
+        except Exception as error:
+            risks.append(f"{entry['path']} : illisible ({error}), non appliqué")
+            continue
+        if _sha256(current) != entry["before_sha256"]:
+            risks.append(
+                f"{entry['path']} : modifié depuis la proposition, non appliqué. Reproposer sur la version actuelle."
+            )
+            continue
+        _write_atomic(target, entry["after"])
+        valid, detail = _syntax_check(config, target)
+        if not valid:
+            _write_atomic(target, current)
+            risks.append(f"{entry['path']} : écriture annulée, {detail}")
+            continue
+        changes.append(f"{entry['path']} : appliqué ({entry['reason']})")
+        touched.append(entry["path"])
+
+    diff_stat = shell.git(config, ["diff", "--stat", "--", *touched]).stdout.strip() if touched else ""
+    bundle_path.unlink(missing_ok=True)
+    return Report(
+        title="Application de proposition",
+        summary=(
+            f"Proposition {patch_id} : {len(touched)} fichier(s) appliqué(s), "
+            f"{len(risks)} refusé(s)."
+        ),
+        files=touched,
+        changes=changes,
+        risks=risks,
+        stats={"patch_id": patch_id, "files_applied": len(touched)},
+        details=diff_stat,
+        next_actions=["Valider avec `git diff` avant tout commit"] if touched else [],
+    )
 
 
 def _syntax_check(config: Config, path: Path) -> tuple[bool, str]:
@@ -90,7 +185,13 @@ def fix(
     max_files: int | None = None,
     dry_run: bool = False,
     allow_dirty: bool = False,
+    mode: str = "propose",
 ) -> Report:
+    """Mode par défaut : propose. Rien n'est écrit tant que l'orchestrateur n'a pas relu le diff et
+    demandé l'application exacte de la proposition, identifiée et vérifiée par hash."""
+    if mode not in ("propose", "direct"):
+        raise ValueError(f"mode inconnu : {mode}. Disponibles : propose, direct (apply passe par apply_patch).")
+    propose = mode == "propose" or dry_run
     target = resolve_path(config, path)
     tree = shell.working_tree_state(config)
     protected = set(tree["modified"]) | set(tree["untracked"])
@@ -110,6 +211,7 @@ def fix(
     previews: list[str] = []
     errors: list[str] = []
     touched: list[str] = []
+    proposals: list[dict] = []
 
     for item in files:
         verdict = _screen(config, item, protected, allow_dirty)
@@ -151,10 +253,17 @@ def fix(
         if not ok:
             risks.append(f"{item.relative} : proposition rejetée ({why})")
             continue
-        if dry_run:
-            changes.append(f"{item.relative} : {reason} (dry-run, non écrit)")
+        if propose:
+            normalized = candidate if candidate.endswith("\n") else candidate + "\n"
+            changes.append(f"{item.relative} : {reason} (proposé, non écrit)")
             touched.append(item.relative)
             previews.append(_preview_diff(item.relative, original, candidate))
+            proposals.append({
+                "path": item.relative,
+                "reason": reason,
+                "before_sha256": _sha256(original),
+                "after": normalized,
+            })
             continue
 
         _write_atomic(item.path, candidate if candidate.endswith("\n") else candidate + "\n")
@@ -171,10 +280,14 @@ def fix(
         "files_examined": len(files),
         "files_found": total,
         "files_changed": len(touched),
-        "dry_run": dry_run,
+        "mode": "propose" if propose else "direct",
     }
+    patch_id = ""
+    if proposals:
+        patch_id = _persist_bundle(config, task, proposals)
+        stats["patch_id"] = patch_id
     diff_stat = ""
-    if touched and not dry_run:
+    if touched and not propose:
         diff = shell.git(config, ["diff", "--stat", "--", *touched])
         diff_stat = diff.stdout.strip()
     elif previews:
@@ -183,9 +296,9 @@ def fix(
     report = Report(
         title="Correction locale",
         summary=(
-            f"{len(touched)} fichier(s) modifié(s) sur {len(files)} examiné(s), "
-            f"{len(skipped)} ignoré(s), branche {tree['branch']}."
-            + (" Aucune écriture (dry-run)." if dry_run else "")
+            f"{len(touched)} fichier(s) {'proposé(s)' if propose else 'modifié(s)'} sur {len(files)} "
+            f"examiné(s), {len(skipped)} ignoré(s), branche {tree['branch']}."
+            + (f" Aucune écriture : proposition {patch_id} en attente d'application." if patch_id else "")
         ),
         files=touched,
         changes=changes,
@@ -198,8 +311,11 @@ def fix(
         report.findings = skipped[:12]
     if not touched:
         report.next_actions = []
-    elif dry_run:
-        report.next_actions = ["Relire le diff proposé, puis relancer sans --dry-run pour appliquer"]
+    elif patch_id:
+        report.next_actions = [
+            f"Relire le diff ci-dessus puis appliquer tel quel : local_fix mode=apply patch_id={patch_id}",
+            "La proposition sera refusée si un fichier a changé entre-temps"
+        ]
     else:
         report.next_actions = ["Valider avec `git diff` avant tout commit"]
     return report
