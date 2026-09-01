@@ -75,13 +75,12 @@ def ensure_usable_root(config: Config) -> None:
     root = config.repo_root
     if root == Path.home():
         raise GuardrailError(
-            "racine de travail égale au répertoire personnel : le client MCP n'a pas été lancé depuis un "
-            "dépôt. Renseigner LOCAL_AGENT_REPO_ROOT dans la configuration du serveur."
+            "racine de travail égale au répertoire personnel : le client n'a pas été lancé depuis un "
+            "dépôt. Passer l'argument repo, ou relancer le client depuis le dépôt visé."
         )
     if not (root / ".git").exists():
         raise GuardrailError(
-            f"{root} n'est pas un dépôt git. Renseigner LOCAL_AGENT_REPO_ROOT dans la configuration "
-            "du serveur MCP, ou lancer la commande depuis un dépôt."
+            f"{root} n'est pas un dépôt git. Passer l'argument repo, ou relancer depuis un dépôt."
         )
 
 
