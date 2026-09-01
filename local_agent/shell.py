@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
 
+CHECKS_FILE = ".local-agent.json"
+
 DOCKER_PREFIX = ["docker", "compose", "exec", "-T", "symfony"]
 
 # Uniquement des commandes en lecture, aucune n'écrit en base applicative ni ne construit d'assets.
-CHECK_COMMANDS: dict[str, dict[str, object]] = {
+_SYMFONY_CHECKS: dict[str, dict[str, object]] = {
     "phpstan": {
         "label": "PHPStan (analyse statique)",
         "command": ["./vendor/bin/phpstan", "analyse", "--no-progress", "--error-format=raw"],
@@ -53,6 +57,59 @@ CHECK_COMMANDS: dict[str, dict[str, object]] = {
     },
 }
 
+_NODE_CHECKS: dict[str, dict[str, object]] = {
+    "test": {"label": "Tests npm", "command": ["npm", "test", "--silent"], "accepts_target": False},
+    "lint": {"label": "Lint npm", "command": ["npm", "run", "lint", "--silent"], "accepts_target": False},
+    "types": {"label": "TypeScript", "command": ["npx", "tsc", "--noEmit"], "accepts_target": False},
+}
+
+_PYTHON_CHECKS: dict[str, dict[str, object]] = {
+    "pytest": {"label": "Pytest", "command": ["python3", "-m", "pytest", "-q"], "accepts_target": True, "accepts_filter": True},
+    "ruff": {"label": "Ruff", "command": ["python3", "-m", "ruff", "check"], "accepts_target": True},
+    "mypy": {"label": "Mypy", "command": ["python3", "-m", "mypy"], "accepts_target": True},
+}
+
+
+def _preset_checks(repo_root: Path) -> dict[str, dict[str, object]]:
+    if (repo_root / "composer.json").exists():
+        return _SYMFONY_CHECKS
+    if (repo_root / "package.json").exists():
+        return _NODE_CHECKS
+    if (repo_root / "pyproject.toml").exists() or (repo_root / "setup.py").exists():
+        return _PYTHON_CHECKS
+    return {}
+
+
+def load_checks(config: Config) -> dict[str, dict[str, object]]:
+    """Contrôles du dépôt : `.local-agent.json` à la racine prime, sinon un preset selon le langage.
+
+    Format du fichier : {"checks": {"nom": {"command": "npm test" ou ["npm", "test"],
+    "accepts_target": bool, "accepts_filter": bool, "default_target": "chemin", "in_container": bool}}}.
+    Seules ces commandes déclarées sont exécutables : le fichier est une liste blanche, pas un shell.
+    """
+    declared: dict[str, dict[str, object]] = {}
+    manifest = config.repo_root / CHECKS_FILE
+    if manifest.is_file():
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"{CHECKS_FILE} illisible : {error}")
+        for name, spec in (payload.get("checks") or {}).items():
+            command = spec.get("command")
+            if isinstance(command, str):
+                command = shlex.split(command)
+            if not isinstance(command, list) or not command:
+                continue
+            declared[str(name)] = {
+                "label": str(spec.get("label") or name),
+                "command": [str(part) for part in command],
+                "accepts_target": bool(spec.get("accepts_target")),
+                "accepts_filter": bool(spec.get("accepts_filter")),
+                "default_target": spec.get("default_target"),
+                "in_container": bool(spec.get("in_container")),
+            }
+    return declared or _preset_checks(config.repo_root)
+
 
 @dataclass
 class CommandResult:
@@ -87,10 +144,16 @@ def run(argv: list[str], cwd: Path, timeout: int) -> CommandResult:
     return CommandResult(printable, process.returncode, process.stdout, process.stderr)
 
 
-def build_check_command(kind: str, target: str | None, filter_expression: str | None) -> list[str]:
-    spec = CHECK_COMMANDS.get(kind)
+def build_check_command(
+    checks: dict[str, dict[str, object]],
+    kind: str,
+    target: str | None,
+    filter_expression: str | None
+) -> tuple[list[str], dict[str, object]]:
+    spec = checks.get(kind)
     if spec is None:
-        raise ValueError(f"contrôle inconnu : {kind}. Disponibles : {', '.join(sorted(CHECK_COMMANDS))}")
+        available = ", ".join(sorted(checks)) or f"aucun (déclarer des checks dans {CHECKS_FILE})"
+        raise ValueError(f"contrôle inconnu : {kind}. Disponibles : {available}")
     argv = list(spec["command"])  # type: ignore[arg-type]
     effective_target = target or spec.get("default_target")
     if spec.get("accepts_target") and effective_target:
@@ -99,7 +162,7 @@ def build_check_command(kind: str, target: str | None, filter_expression: str | 
         argv += ["--filter", filter_expression]
     if spec.get("in_container"):
         argv = [*DOCKER_PREFIX, *argv]
-    return argv
+    return argv, spec
 
 
 def git(config: Config, args: list[str], timeout: int = 60) -> CommandResult:
