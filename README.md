@@ -1,21 +1,32 @@
 # local-agent
 
-**Give your local LLM the repo, not Claude's context window.**
+**Keep code, screenshots, logs and data local. Claude gets an evidence packet, not the raw document.**
 
-Délégation du contexte de dépôt à un modèle servi localement (API compatible OpenAI), afin de préserver
-le contexte et le quota du modèle orchestrateur (Claude Code, Cursor, tout client MCP).
+Couche locale de réduction de contexte pour un agent de code (Claude Code, Cursor, tout client MCP).
+L'orchestrateur envoie une intention et un chemin. Le brut reste sur la machine : `ripgrep`, git, OCR
+Apple Vision, agrégats. Claude reçoit un paquet de preuves (500 à 3 000 tokens) avec des ids pour
+demander le détail. Ce n'est pas un délégué LLM : le modèle local (mlx-serve) ne sert que le **code**.
+Les captures passent par Vision, sans swap du 35B, sans VLM.
 
-Le principe : l'orchestrateur ne transmet **jamais** de contenu de fichier. Il transmet un chemin et une
-consigne, et n'a même pas à choisir les fichiers. Le local-agent découvre les fichiers avec `ripgrep`,
-sélectionne, découpe, interroge le modèle local, puis ne renvoie qu'un rapport structuré de quelques
-centaines de tokens, avec l'économie de contexte chiffrée à chaque appel.
+Règle : Claude ne reçoit jamais le document brut par défaut. D'abord un index avec des pointeurs,
+ensuite un drill-down précis (`local_image_crop`, un fichier, un extrait).
 
 ![Architecture hybride : l'orchestrateur envoie tâche et chemin, local-agent explore le dépôt et ne renvoie qu'un résumé compact](docs/architecture.jpg)
 
-## Résultats mesurés
+## Ce que ça rapporte, mesuré
 
-Banc de volume sur un dépôt Symfony réel de plus de 8 000 fichiers, contre la lecture manuelle qu'aurait
-faite l'orchestrateur (détail dans `tests/bench.py`, latences sur un MoE 35B quantifié 4-bit) :
+Pas un x2 magique. Le gain suit ce qui est intercepté **avant** d'entrer dans Claude.
+
+| Type de session | Potentiel observé ou cible |
+|---|---|
+| Recette / anomalie, code seul (~12,5 % du contexte) | ~2 % d'une session de 18 M |
+| Même session si les captures restent hors du préfixe | cible ~5–7 %, à mesurer |
+| Exploration d'un module inconnu | ~8 % |
+| Gros log / données | 10–30 %+ |
+| Session surtout visuelle | dépend du crop, pas de l'OCR seul |
+
+Banc de volume sur un dépôt Symfony réel de plus de 8 000 fichiers, contre la lecture manuelle
+(détail dans `tests/bench.py`, latences sur un MoE 35B quantifié 4-bit) :
 
 | Tâche | Contexte évité | Compression | Durée |
 |---|---|---|---|
@@ -113,7 +124,8 @@ Redémarrer le client après toute modification de ces fichiers.
 | `local_fix`          | Modification mécanique, transactionnelle par défaut           | `path`, `task`, `mode`, `patch_id`, `globs`, `allow_dirty` |
 | `local_test_analysis`| Contrôle projet filtré et synthétisé                         | `kind`, `target`, `filter`                             |
 | `local_log_analysis` | Analyse de logs volumineux                                   | `path`, `task`, `patterns`                             |
-| `local_image`        | OCR d'une capture (Vision, pas le LLM)                        | `path`, `paths`, `task`                                 |
+| `local_image`        | OCR d'une capture → paquet de preuves (Vision, pas de LLM)    | `path`, `paths`, `task`                                 |
+| `local_image_crop`   | Crop d'une région (`a832-R1`), sans la capture complète       | `id`                                                    |
 | `local_diff_review`  | Revue d'un diff git avec message de commit proposé            | `scope`, `base`, `task`                                |
 | `local_ping`         | Diagnostic : connexion, racine, contrôles disponibles, config | aucun                                                  |
 
@@ -132,19 +144,23 @@ pour les changements triviaux.
 
 ### Observabilité
 
-Chaque réponse se termine par deux chiffres : le **one-shot** (contexte non chargé cette fois) et
-l'**effet facturé** (ce one-shot × `LOCAL_AGENT_COMPOUND_TURNS`, défaut 25). Un token non ajouté au
-préfixe n'est pas économisé une fois, il l'est à chaque requête suivante. Mesuré sur une longue session
-Claude : 14 339 one-shot → ~390 000 facturés (~27×). Le même appel vaut plus en début de session qu'à
-la fin. Cumuls dans `~/.local-agent/usage-totals.json` ; journal JSONL dans `usage.jsonl`.
+Chaque réponse MCP affiche quatre compteurs distincts :
+
+1. **Raw context processed locally** : ce qui a été lu ici
+2. **Claude-visible context returned** : ce qui part dans le paquet
+3. **Direct context avoided** : la différence, one-shot
+4. **Context exposure avoided** : ce one-shot × `LOCAL_AGENT_COMPOUND_TURNS` (défaut 25)
+
+Le quatrième est une estimation d'exposition dans les tours suivants, **pas du billed**. Cache et
+compaction du harness s'en mêlent. Mesuré : 14 339 one-shot → ~390 000 token-turns (~27×). Le même
+appel vaut plus en début de session qu'à la fin. Cumuls dans `~/.local-agent/usage-totals.json`.
 
 ### Captures d'écran
 
-`local_image` lit le fichier image sur disque et rend le texte à l'écran (libellés, erreurs, boutons).
-Le 35B n'est pas appelé, le modèle vision n'est pas chargé : OCR macOS Vision, Tesseract en repli.
-Un chemin absolu hors dépôt est accepté, les captures n'étant presque jamais dans git. Inventaire
-seulement : layout, couleur et verdict de recette restent à l'orchestrateur. Mesuré : trois captures
-de recette pesaient 124 Ko dans le contexte, plus que tout le code de la session.
+`local_image` lit le fichier, rend le texte verbatim et des ids de régions. `local_image_crop` sort
+un PNG de la zone utile. Pas de modèle, pas de VLM. Un chemin absolu hors git est accepté. Claude
+vérifie visuellement les régions qui changent l'implémentation, pas trois 4K par défaut. Mesuré :
+trois captures de recette pesaient 124 Ko dans le contexte, plus que tout le code de la session.
 
 ## Utilisation en ligne de commande
 
@@ -176,6 +192,7 @@ de recette pesaient 124 Ko dans le contexte, plus que tout le code de la session
 
 ~/.local-agent/bin/local-agent image ~/Desktop/capture.png
 ~/.local-agent/bin/local-agent image ecran1.png ecran2.png ecran3.png --task "erreur"
+~/.local-agent/bin/local-agent image-crop a832b1c4-R1
 ```
 
 `--json` remplace le rendu markdown par le rapport JSON brut.
@@ -259,7 +276,8 @@ local_agent/
 ├── shell.py     exécution de commandes en liste blanche, état du working tree
 ├── prompts.py   consignes, contrats de sortie, extraction JSON tolérante aux troncatures
 ├── tasks.py     search, analyze, logs, check, diff_review
-├── ocr.py       OCR local d'une capture (Vision / Tesseract, sans LLM)
+├── evidence.py  cache des paquets de preuves (ids, expiration 7 jours)
+├── ocr.py       OCR et crop d'une capture (Vision / Tesseract, sans LLM)
 ├── ocr_vision.swift  binaire Vision compilé à la demande dans var/local-ocr
 ├── edit.py      propositions transactionnelles et réécriture sous contrôle git
 ├── report.py    rapport compact et clamp de sortie

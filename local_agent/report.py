@@ -19,6 +19,7 @@ class Report:
     locations: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
     changes: list[str] = field(default_factory=list)
+    evidence: list[dict] = field(default_factory=list)
     next_actions: list[str] = field(default_factory=list)
     stats: dict[str, object] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -33,6 +34,7 @@ class Report:
             "locations": self.locations,
             "risks": self.risks,
             "changes": self.changes,
+            "evidence": self.evidence,
             "next_actions": self.next_actions,
             "stats": self.stats,
             "errors": self.errors,
@@ -54,6 +56,23 @@ def _section(name: str, items: list[str], limit: int = 25) -> list[str]:
     return lines
 
 
+def _evidence_section(items: list[dict], limit: int = 15) -> list[str]:
+    if not items:
+        return []
+    lines = ["## Evidence"]
+    for item in items[:limit]:
+        identifier = item.get("id") or item.get("source") or "?"
+        kind = item.get("type") or "evidence"
+        conf = item.get("confidence")
+        content = str(item.get("content") or "").replace("\n", " ").strip()
+        suffix = f", {conf}" if isinstance(conf, (int, float)) else ""
+        lines.append(f"- `{identifier}` ({kind}{suffix}): {content[:220]}")
+    if len(items) > limit:
+        lines.append(f"- (+{len(items) - limit} more)")
+    lines.append("")
+    return lines
+
+
 def render_markdown(report: Report, config: Config) -> str:
     lines = [f"# {report.title}", ""]
     if report.summary:
@@ -63,6 +82,7 @@ def render_markdown(report: Report, config: Config) -> str:
     lines += _section("Locations", report.locations, limit=40)
     lines += _section("Risks", report.risks)
     lines += _section("Changes", report.changes, limit=40)
+    lines += _evidence_section(report.evidence)
     lines += _section("Next actions", report.next_actions, limit=10)
     if report.errors:
         lines += _section("Local-agent failures", report.errors)

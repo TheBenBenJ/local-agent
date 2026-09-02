@@ -15,10 +15,13 @@ from local_agent.config import get_config  # noqa: E402
 from local_agent.files import GuardrailError  # noqa: E402
 from local_agent.ocr import (  # noqa: E402
     collect_paths,
+    crop_region,
+    make_regions,
     read_images,
     resolve_image_path,
     rows_from_lines,
 )
+from local_agent.evidence import parse_region_id  # noqa: E402
 
 # PNG 1x1 : assez pour les garde-fous, pas pour un vrai OCR.
 PNG_1X1 = bytes.fromhex(
@@ -128,6 +131,19 @@ def main() -> None:
         check("compte la source en équivalent base64", report.stats.get("source_caracteres") == int(len(PNG_1X1) * 4 / 3))
         check("filtre task sans modèle", any("champ obligatoire" in item for item in report.findings))
         check("détail contient le texte lu", "Type d'envoi" in report.details)
+        check("paquet de preuves non vide", bool(report.evidence))
+        check("région saillante en premier", report.evidence[0]["salient"] is True)
+
+    check("parse a832-R1", parse_region_id("a832b1c4-R1") == ("a832b1c4", "R1"))
+    check("parse image://", parse_region_id("image://a832b1c4/R2") == ("a832b1c4", "R2"))
+    regions = make_regions(
+        "deadbeef",
+        [
+            {"text": "Titre", "confidence": 0.9, "x": 0.1, "y": 0.9, "width": 0.4, "height": 0.05},
+            {"text": "Erreur 404", "confidence": 0.9, "x": 0.1, "y": 0.4, "width": 0.4, "height": 0.05},
+        ],
+    )
+    check("R1 est la zone d'erreur", regions[0]["id"] == "deadbeef-R1" and "404" in regions[0]["content"])
 
     sample = _render_sample("TypeEnvoiFacture")
     if sample is None:
@@ -137,6 +153,11 @@ def main() -> None:
         blob = (live.details or "") + "\n".join(live.findings)
         check("Vision lit le texte rendu", "TypeEnvoiFacture" in blob.replace(" ", ""))
         check("backend Vision sans LLM", live.stats.get("backend") == "macos-vision")
+        region_id = (live.evidence or [{}])[0].get("id")
+        check("une région à cropper", bool(region_id))
+        cropped, path = crop_region(config, str(region_id))
+        check("crop sans LLM", cropped.stats.get("backend") == "crop")
+        check("PNG de crop écrit", path.is_file() and path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n")
 
     print("tous les contrôles OCR passent")
 

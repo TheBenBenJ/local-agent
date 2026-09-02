@@ -32,6 +32,39 @@ def billed_chars(saved_chars: int, remaining_turns: int) -> int:
     return max(0, int(saved_chars)) * max(1, int(remaining_turns))
 
 
+def tokens_from_chars(chars: int) -> int:
+    return max(0, int(chars) // 4)
+
+
+def savings_footer(
+    source_chars: int,
+    returned_chars: int,
+    remaining_turns: int,
+    *,
+    session_saved: int,
+    session_compounded: int,
+    lifetime_saved: int,
+    lifetime_compounded: int,
+) -> str:
+    """Four counters: raw, visible, avoided, exposure. Exposure is not billed usage."""
+    raw = tokens_from_chars(source_chars)
+    visible = tokens_from_chars(returned_chars)
+    avoided = max(0, raw - visible)
+    exposure = tokens_from_chars(billed_chars(avoided * 4, remaining_turns))
+    return (
+        f"\n\nRaw context processed locally: ~{raw} tokens\n"
+        f"Claude-visible context returned: ~{visible} tokens\n"
+        f"Direct context avoided: ~{avoided} this call · "
+        f"~{tokens_from_chars(session_saved)} this session · "
+        f"~{tokens_from_chars(lifetime_saved)} lifetime\n"
+        f"Context exposure avoided (×{remaining_turns} further turns in the prefix): "
+        f"~{exposure} this call · ~{tokens_from_chars(session_compounded)} this session · "
+        f"~{tokens_from_chars(lifetime_compounded)} lifetime. "
+        "Estimate, not billed: cache and compaction apply. "
+        "The same call is worth more at the start of a session than at the end."
+    )
+
+
 def passthrough(
     title: str,
     raw: str,

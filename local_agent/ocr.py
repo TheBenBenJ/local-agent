@@ -1,15 +1,18 @@
-"""OCR local d'une capture : Vision (macOS) ou Tesseract, jamais le LLM de synthèse."""
+"""OCR local d'une capture : Vision (macOS) ou Tesseract, jamais un LLM."""
 
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from . import evidence
 from .config import Config
 from .files import DENIED_PATTERNS, GuardrailError, relative_to_root
 from .report import Report
@@ -22,6 +25,14 @@ MIN_CONFIDENCE = 0.3
 ROW_Y_TOLERANCE = 0.015
 # Trois captures d'admin tiennent ~8 Ko de texte ; le clamp code (900 tokens) tronquerait la troisième.
 IMAGE_OUTPUT_TOKENS = 2000
+BLOCK_Y_GAP = 0.06
+BOX_PAD = 0.04
+MAX_REGIONS = 12
+MAX_EMBED_BYTES = 400_000
+SALIENT = re.compile(
+    r"erreur|error|warning|disabled|obligatoire|interdit|exception|404|échec|echec|invalid",
+    re.IGNORECASE,
+)
 
 OcrRunner = Callable[[list[Path]], list[dict]]
 
@@ -89,9 +100,8 @@ def resolve_image_path(config: Config, raw: str) -> Path:
     return resolved
 
 
-def rows_from_lines(lines: list[dict], y_tolerance: float = ROW_Y_TOLERANCE) -> list[str]:
-    """Regroupe les boîtes de même hauteur de lecture, gauche à droite."""
-    rows: list[list[dict]] = []
+def _usable_lines(lines: list[dict]) -> list[dict]:
+    usable: list[dict] = []
     for line in lines:
         text = str(line.get("text") or "").strip()
         if not text:
@@ -102,11 +112,90 @@ def rows_from_lines(lines: list[dict], y_tolerance: float = ROW_Y_TOLERANCE) -> 
             confidence = 1.0
         if confidence < MIN_CONFIDENCE:
             continue
+        usable.append(dict(line, text=text, confidence=confidence))
+    return usable
+
+
+def row_clusters(lines: list[dict], y_tolerance: float = ROW_Y_TOLERANCE) -> list[list[dict]]:
+    """Regroupe les boîtes de même hauteur de lecture, gauche à droite."""
+    rows: list[list[dict]] = []
+    for line in _usable_lines(lines):
         if rows and abs(float(rows[-1][0].get("y") or 0) - float(line.get("y") or 0)) <= y_tolerance:
             rows[-1].append(line)
         else:
             rows.append([line])
-    return ["  ".join(str(item.get("text") or "").strip() for item in row) for row in rows]
+    return rows
+
+
+def rows_from_lines(lines: list[dict], y_tolerance: float = ROW_Y_TOLERANCE) -> list[str]:
+    return ["  ".join(str(item.get("text") or "").strip() for item in row) for row in row_clusters(lines, y_tolerance)]
+
+
+def _row_y(row: list[dict]) -> float:
+    return sum(float(item.get("y") or 0) for item in row) / max(1, len(row))
+
+
+def text_blocks(lines: list[dict], gap: float = BLOCK_Y_GAP) -> list[list[dict]]:
+    rows = row_clusters(lines)
+    if not rows:
+        return []
+    blocks: list[list[dict]] = [list(rows[0])]
+    prev_y = _row_y(rows[0])
+    for row in rows[1:]:
+        y = _row_y(row)
+        if abs(prev_y - y) > gap:
+            blocks.append(list(row))
+        else:
+            blocks[-1].extend(row)
+        prev_y = y
+    return blocks
+
+
+def union_box(lines: list[dict]) -> dict[str, float]:
+    left = min(float(item.get("x") or 0) for item in lines)
+    bottom = min(float(item.get("y") or 0) for item in lines)
+    right = max(float(item.get("x") or 0) + float(item.get("width") or 0) for item in lines)
+    top = max(float(item.get("y") or 0) + float(item.get("height") or 0) for item in lines)
+    return {"x": left, "y": bottom, "width": max(0.01, right - left), "height": max(0.01, top - bottom)}
+
+
+def pad_box(box: dict[str, float], pad: float = BOX_PAD) -> dict[str, float]:
+    x = max(0.0, float(box["x"]) - pad)
+    y = max(0.0, float(box["y"]) - pad)
+    right = min(1.0, float(box["x"]) + float(box["width"]) + pad)
+    top = min(1.0, float(box["y"]) + float(box["height"]) + pad)
+    return {"x": x, "y": y, "width": max(0.01, right - x), "height": max(0.01, top - y)}
+
+
+def image_id_for(path: Path) -> str:
+    stamp = f"{path.resolve()}:{path.stat().st_mtime_ns}:{path.stat().st_size}"
+    return hashlib.sha256(stamp.encode("utf-8")).hexdigest()[:8]
+
+
+def make_regions(image_id: str, lines: list[dict], limit: int = MAX_REGIONS) -> list[dict]:
+    scored: list[tuple] = []
+    for index, block in enumerate(text_blocks(lines)):
+        text = " | ".join(str(item.get("text") or "").strip() for item in block)
+        conf = min(float(item.get("confidence") or 1) for item in block)
+        salient = bool(SALIENT.search(text))
+        scored.append((0 if salient else 1, -len(block), index, block, text, conf, salient))
+    scored.sort()
+    regions: list[dict] = []
+    for rank, item in enumerate(scored[:limit], start=1):
+        _s, _n, _i, block, text, conf, salient = item
+        box = pad_box(union_box(block))
+        regions.append(
+            {
+                "id": f"{image_id}-R{rank}",
+                "source": f"image://{image_id}/R{rank}",
+                "type": "image_region",
+                "content": text[:400],
+                "confidence": round(conf, 2),
+                "box": box,
+                "salient": salient,
+            }
+        )
+    return regions
 
 
 def _ensure_vision_binary() -> Path:
@@ -208,6 +297,30 @@ def run_ocr(paths: list[Path]) -> tuple[list[dict], str]:
     )
 
 
+def _run_crop(source: Path, destination: Path, box: dict) -> None:
+    binary = _ensure_vision_binary()
+    process = subprocess.run(
+        [
+            str(binary),
+            "crop",
+            str(source),
+            str(destination),
+            str(box["x"]),
+            str(box["y"]),
+            str(box["width"]),
+            str(box["height"]),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    if process.returncode != 0 or not destination.is_file():
+        detail = (process.stderr or process.stdout or "crop failed").strip()[:400]
+        raise GuardrailError(f"crop failed : {detail}")
+
+
 def read_images(
     config: Config,
     path: str | None,
@@ -226,6 +339,7 @@ def read_images(
     findings: list[str] = []
     details_parts: list[str] = []
     errors: list[str] = []
+    evidence_items: list[dict] = []
     line_count = 0
     needle = (task or "").strip().lower()
     matched: list[str] = []
@@ -239,6 +353,19 @@ def read_images(
         rows = rows_from_lines(lines)
         line_count += len(rows)
         label = relative_to_root(config, file_path)
+        image_id = image_id_for(file_path)
+        regions = make_regions(image_id, lines)
+        evidence.store(
+            image_id,
+            {
+                "path": str(file_path),
+                "backend": backend,
+                "size": file_path.stat().st_size,
+                "lines": lines,
+                "regions": regions,
+            },
+        )
+        evidence_items.extend(regions)
         if error:
             errors.append(f"{label}: {error}")
         if not rows:
@@ -247,15 +374,18 @@ def read_images(
         if needle:
             matched.extend(f"{label}: {row}" for row in rows if needle in row.lower())
         preview = rows[:8]
-        findings.append(f"{label} ({len(rows)} lines): " + " | ".join(preview))
-        details_parts.append("### " + label + "\n" + "\n".join(rows))
+        findings.append(
+            f"{label} ({len(rows)} lines, id={image_id}): " + " | ".join(preview)
+        )
+        details_parts.append("### " + label + f" (`{image_id}`)\n" + "\n".join(rows))
 
     if matched:
         findings = [f"Matches for {task!r}:"] + matched[:20] + findings
 
     summary = (
         f"OCR inventory of {len(resolved)} image(s), {line_count} text lines, backend={backend}. "
-        "On-screen text only, not a recette verdict and not layout or colour."
+        "Verbatim on-screen text, not a recette verdict. Crop a region with local_image_crop "
+        "when layout or colour matters; do not attach the full screenshot."
     )
     source_chars = sum(int(item.stat().st_size * 4 / 3) for item in resolved)
     return Report(
@@ -263,15 +393,61 @@ def read_images(
         summary=summary,
         findings=findings,
         files=[relative_to_root(config, item) for item in resolved],
+        evidence=evidence_items,
         next_actions=[
-            "Inventory only: confirm layout, colour and recette yourself if they matter.",
+            "Crop a material region with local_image_crop and its id (e.g. a832b1c4-R1).",
+            "Look at the original only if a crop is not enough for layout or colour.",
         ],
         stats={
             "images": len(resolved),
             "lignes": line_count,
+            "regions": len(evidence_items),
             "backend": backend,
             "source_caracteres": source_chars,
         },
         errors=errors,
         details="\n\n".join(details_parts),
     )
+
+
+def crop_region(config: Config, raw_id: str) -> tuple[Report, Path]:
+    image_id, region_id = evidence.parse_region_id(raw_id)
+    packet = evidence.load(image_id)
+    source = Path(str(packet.get("path") or ""))
+    if not source.is_file():
+        raise GuardrailError(f"original image missing for {image_id}: {source}")
+    resolve_image_path(config, str(source))
+    wanted = f"{image_id}-{region_id}"
+    match = None
+    for item in packet.get("regions") or []:
+        if str(item.get("id")) in {wanted, region_id, f"{image_id}-{region_id}"}:
+            match = item
+            break
+    if match is None:
+        known = ", ".join(str(item.get("id")) for item in (packet.get("regions") or [])[:12]) or "none"
+        raise GuardrailError(f"unknown region {raw_id}. Known: {known}")
+    box = match.get("box") or {}
+    if not all(key in box for key in ("x", "y", "width", "height")):
+        raise GuardrailError(f"region {raw_id} has no box")
+    destination = evidence.EVIDENCE_DIR / f"{wanted}.png"
+    evidence.EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    _run_crop(source, destination, box)
+    original = int(packet.get("size") or source.stat().st_size)
+    report = Report(
+        title=f"Image crop {wanted}",
+        summary=(
+            f"Crop of `{wanted}` from {relative_to_root(config, source)}. "
+            "Inspect this region only; the full screenshot stays local."
+        ),
+        findings=[str(match.get("content") or "")],
+        files=[str(destination)],
+        evidence=[dict(match, crop=str(destination))],
+        stats={
+            "backend": "crop",
+            "original_octets": original,
+            "crop_octets": destination.stat().st_size,
+            "source_caracteres": int(original * 4 / 3),
+        },
+        details=f"crop={destination}",
+    )
+    return report, destination

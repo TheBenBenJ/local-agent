@@ -16,7 +16,7 @@ from .report import Report, render_json, render_markdown
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="local-agent",
-        description="Délègue les tâches gourmandes en contexte à un modèle MLX local.",
+        description="Réduit le contexte brut avant qu'il n'entre chez l'orchestrateur.",
     )
     parser.add_argument("--json", action="store_true", help="sortie JSON au lieu du markdown")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -68,9 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--base", default=None, help="branche de base pour scope=branch")
     diff.add_argument("--task", default=None)
 
-    image = subparsers.add_parser("image", help="OCR local d'une capture, sans modèle de synthèse")
+    image = subparsers.add_parser("image", help="OCR local d'une capture, sans modèle")
     image.add_argument("paths", nargs="+", help="chemins d'images, absolus autorisés")
     image.add_argument("--task", default=None, help="filtre de lignes (sous-chaîne, sans modèle)")
+
+    crop = subparsers.add_parser("image-crop", help="extrait une région OCR (id rendu par image)")
+    crop.add_argument("id", help="identifiant de région, ex. a832b1c4-R1")
 
     return parser
 
@@ -135,6 +138,9 @@ def _dispatch(arguments: argparse.Namespace, config, client: MlxClient) -> Repor
     if command == "image":
         paths = list(arguments.paths)
         return ocr.read_images(config, paths[0], paths[1:] or None, arguments.task)
+    if command == "image-crop":
+        report, _crop = ocr.crop_region(config, arguments.id)
+        return report
     raise ValueError(f"commande inconnue : {command}")
 
 

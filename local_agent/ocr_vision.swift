@@ -17,13 +17,15 @@ struct OCRImage: Codable {
     let error: String?
 }
 
-func ocr(path: String) -> OCRImage {
+func loadCGImage(path: String) -> CGImage? {
     let url = URL(fileURLWithPath: path)
-    guard let image = NSImage(contentsOf: url) else {
-        return OCRImage(path: path, lines: [], error: "unreadable image")
-    }
+    guard let image = NSImage(contentsOf: url) else { return nil }
     var rect = NSRect(origin: .zero, size: image.size)
-    guard let cgImage = image.cgImage(forProposedRect: &rect, context: nil, hints: nil) else {
+    return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+}
+
+func ocr(path: String) -> OCRImage {
+    guard let cgImage = loadCGImage(path: path) else {
         return OCRImage(path: path, lines: [], error: "unreadable image")
     }
 
@@ -65,8 +67,57 @@ func ocr(path: String) -> OCRImage {
     return OCRImage(path: path, lines: lines, error: nil)
 }
 
+func crop(input: String, output: String, x: Double, y: Double, width: Double, height: Double) {
+    guard let cgImage = loadCGImage(path: input) else {
+        fputs("unreadable image\n", stderr)
+        exit(1)
+    }
+    let pxWidth = Double(cgImage.width)
+    let pxHeight = Double(cgImage.height)
+    let cropX = max(0, x) * pxWidth
+    let cropW = max(1, width) * pxWidth
+    let cropH = max(1, height) * pxHeight
+    let cropYFromTop = (1 - max(0, y) - max(0, height)) * pxHeight
+    let rect = CGRect(
+        x: cropX,
+        y: max(0, cropYFromTop),
+        width: min(cropW, pxWidth - cropX),
+        height: min(cropH, pxHeight - max(0, cropYFromTop))
+    )
+    guard rect.width >= 1, rect.height >= 1, let sliced = cgImage.cropping(to: rect) else {
+        fputs("empty crop\n", stderr)
+        exit(1)
+    }
+    let rep = NSBitmapImageRep(cgImage: sliced)
+    guard let png = rep.representation(using: .png, properties: [:]) else {
+        fputs("png encode failed\n", stderr)
+        exit(1)
+    }
+    do {
+        try png.write(to: URL(fileURLWithPath: output))
+    } catch {
+        fputs("write failed: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+}
+
+let args = Array(CommandLine.arguments.dropFirst())
+if args.first == "crop" {
+    guard args.count == 7,
+          let x = Double(args[3]),
+          let y = Double(args[4]),
+          let width = Double(args[5]),
+          let height = Double(args[6]) else {
+        fputs("usage: local-ocr crop INPUT OUTPUT X Y W H\n", stderr)
+        exit(2)
+    }
+    crop(input: args[1], output: args[2], x: x, y: y, width: width, height: height)
+    print("ok")
+    exit(0)
+}
+
 var images: [OCRImage] = []
-for path in CommandLine.arguments.dropFirst() {
+for path in args {
     images.append(ocr(path: path))
 }
 

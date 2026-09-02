@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sys
 import time
 import traceback
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .budget import billed_chars
+from .budget import billed_chars, savings_footer
 from .config import Config, get_config
 from .files import GuardrailError, ensure_usable_root
 from .mlx import MlxClient, MlxError
-from .report import clamp, render_markdown
+from .report import Report, clamp, render_markdown
 from . import edit, ocr, shell, tasks
 
 SERVER_NAME = "local-agent"
@@ -167,8 +168,8 @@ TOOLS: list[dict] = [
             "context and without swapping the local LLM. Uses macOS Vision OCR (Tesseract fallback). "
             "Pass a filesystem path; absolute paths are allowed because captures rarely live in the "
             "git repo. One call can take several images. Inventory only: labels, errors, buttons, "
-            "empty states. Not a recette verdict and not layout or colour: look at the image yourself "
-            "when those matter. Prefer this over attaching the image as soon as you have a path."
+            "empty states. Not a recette verdict. For layout or colour, crop a region with "
+            "local_image_crop instead of attaching the full screenshot."
         ),
         "inputSchema": {
             "type": "object",
@@ -188,6 +189,25 @@ TOOLS: list[dict] = [
                 },
                 "repo": _REPO,
             },
+        },
+    },
+    {
+        "name": "local_image_crop",
+        "description": (
+            "After local_image, fetch one region by id (e.g. a832b1c4-R1). Returns a cropped PNG "
+            "so you can inspect layout or colour of that region only. No LLM, no full screenshot. "
+            "Use this instead of attaching the original capture."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Region id from local_image, e.g. a832b1c4-R1",
+                },
+                "repo": _REPO,
+            },
+            "required": ["id"],
         },
     },
     {
@@ -276,7 +296,23 @@ def _with_repo(config: Config, arguments: dict) -> Config:
     return replace(config, repo_root=Path(override).expanduser().resolve())
 
 
-def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) -> tuple[str, int]:
+@dataclass
+class ToolResult:
+    text: str
+    saved: int = 0
+    source_chars: int = 0
+    media: list[dict] = field(default_factory=list)
+
+
+def _result_from_report(report: Report, config: Config) -> ToolResult:
+    text = render_markdown(report, config)
+    source = report.stats.get("source_caracteres")
+    source_i = int(source) if isinstance(source, int) else 0
+    saved = max(0, source_i - len(text)) if source_i else 0
+    return ToolResult(text=text, saved=saved, source_chars=source_i)
+
+
+def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) -> ToolResult:
     """Rend le texte de réponse et l'estimation de contexte épargné à l'orchestrateur."""
     config = _with_repo(config, arguments)
     if name == "local_ping":
@@ -296,7 +332,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             "ocr": ocr.backend_status(),
             "config": config.as_summary(),
         }
-        return json.dumps(payload, ensure_ascii=False, indent=2), 0
+        return ToolResult(text=json.dumps(payload, ensure_ascii=False, indent=2))
 
     if name == "local_search":
         report = tasks.search(
@@ -368,17 +404,28 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             arguments.get("paths"),
             arguments.get("task"),
         )
-        text = render_markdown(report, ocr.image_config(config))
-        source = report.stats.get("source_caracteres")
-        saved = max(0, int(source) - len(text)) if isinstance(source, int) else 0
-        return text, saved
+        return _result_from_report(report, ocr.image_config(config))
+    elif name == "local_image_crop":
+        if not arguments.get("id"):
+            raise ValueError("id is required, e.g. a832b1c4-R1")
+        report, crop_path = ocr.crop_region(config, str(arguments["id"]))
+        result = _result_from_report(report, ocr.image_config(config))
+        size = crop_path.stat().st_size
+        if 0 < size <= ocr.MAX_EMBED_BYTES:
+            result.media.append(
+                {
+                    "type": "image",
+                    "mimeType": "image/png",
+                    "data": base64.standard_b64encode(crop_path.read_bytes()).decode("ascii"),
+                }
+            )
+            extra = size * 4 // 3
+            result.saved = max(0, result.source_chars - len(result.text) - extra)
+        return result
     else:
         raise ValueError(f"unknown tool: {name}")
 
-    text = render_markdown(report, config)
-    source = report.stats.get("source_caracteres")
-    saved = max(0, int(source) - len(text)) if isinstance(source, int) else 0
-    return text, saved
+    return _result_from_report(report, config)
 
 
 class Server:
@@ -427,26 +474,35 @@ class Server:
         arguments = params.get("arguments") or {}
         start = time.monotonic()
         try:
-            text, saved = _handle_tool(name, arguments, self.config, self.client)
+            result = _handle_tool(name, arguments, self.config, self.client)
             remaining = max(1, self.config.compound_turns)
-            compounded = billed_chars(saved, remaining)
+            compounded = billed_chars(result.saved, remaining)
             _log_usage(
-                name, start, len(text), error=False, saved_chars=saved, compounded_chars=compounded
+                name,
+                start,
+                len(result.text),
+                error=False,
+                saved_chars=result.saved,
+                compounded_chars=compounded,
             )
+            text = result.text
             if name != "local_ping":
                 self.session_calls += 1
-                self.session_saved += saved
+                self.session_saved += result.saved
                 self.session_compounded += compounded
-                totals = _bump_totals(saved, compounded)
-                text += (
-                    f"\n\nOne-shot context avoided: ~{saved // 4} tokens this call · "
-                    f"~{self.session_saved // 4} this session · ~{totals['saved_chars'] // 4} lifetime.\n"
-                    f"Estimated billed effect (×{remaining} further turns in the prefix): "
-                    f"~{compounded // 4} this call · ~{self.session_compounded // 4} this session · "
-                    f"~{int(totals.get('compounded_chars') or 0) // 4} lifetime. "
-                    "The same call is worth more at the start of a session than at the end."
+                totals = _bump_totals(result.saved, compounded)
+                source = result.source_chars or (result.saved + len(result.text))
+                text += savings_footer(
+                    source,
+                    len(result.text),
+                    remaining,
+                    session_saved=self.session_saved,
+                    session_compounded=self.session_compounded,
+                    lifetime_saved=int(totals.get("saved_chars") or 0),
+                    lifetime_compounded=int(totals.get("compounded_chars") or 0),
                 )
-            return self._result(identifier, {"content": [{"type": "text", "text": text}], "isError": False})
+            content: list[dict] = [{"type": "text", "text": text}, *result.media]
+            return self._result(identifier, {"content": content, "isError": False})
         except (GuardrailError, MlxError, ValueError, KeyError) as error:
             message = f"local-agent ({name}) refused or failed: {error}"
         except Exception as error:  # noqa: BLE001

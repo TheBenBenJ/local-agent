@@ -45,9 +45,10 @@ def _walk(node) -> list[str]:
 
 def main() -> None:
     names = [tool["name"] for tool in TOOLS]
-    check("nine tools exposed", len(TOOLS) == 9)
+    check("ten tools exposed", len(TOOLS) == 10)
     check("local_search present", "local_search" in names)
     check("local_image present", "local_image" in names)
+    check("local_image_crop present", "local_image_crop" in names)
     for tool in TOOLS:
         blob = "\n".join(_walk(tool))
         hit = _FRENCH.search(blob)

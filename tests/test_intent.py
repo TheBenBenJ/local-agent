@@ -114,9 +114,11 @@ diff --git a/src/Foo.php b/src/Foo.php
     check("résout _log_usage dans le dépôt", "_log_usage" in resolved and "mcp.py" in resolved["_log_usage"])
     check("n'invente pas une définition absente", "fonctionInconnueXYZ" not in resolved)
 
-    from local_agent.budget import billed_chars
+    from local_agent.budget import billed_chars, savings_footer
     check("effet facturé = one-shot × tours", billed_chars(14_339 * 4, 25) == 14_339 * 4 * 25)
     check("tours restants au minimum 1", billed_chars(100, 0) == 100)
+    footer = savings_footer(4000, 400, 25, session_saved=4000, session_compounded=100000, lifetime_saved=4000, lifetime_compounded=100000)
+    check("pied brut / visible / évité", "Raw context processed locally" in footer and "not billed" in footer)
 
     print("tous les contrôles de revue de diff passent")
 

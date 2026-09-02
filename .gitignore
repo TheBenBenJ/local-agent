@@ -17,3 +17,4 @@ tests/cases.local.json
 usage.jsonl
 usage-totals.json
 patches/
+evidence/
