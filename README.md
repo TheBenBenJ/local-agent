@@ -10,6 +10,8 @@ consigne, et n'a même pas à choisir les fichiers. Le local-agent découvre les
 sélectionne, découpe, interroge le modèle local, puis ne renvoie qu'un rapport structuré de quelques
 centaines de tokens, avec l'économie de contexte chiffrée à chaque appel.
 
+![Architecture hybride : l'orchestrateur envoie tâche et chemin, local-agent explore le dépôt et ne renvoie qu'un résumé compact](docs/architecture.jpg)
+
 ## Résultats mesurés
 
 Banc de volume sur un dépôt Symfony réel de plus de 8 000 fichiers, contre la lecture manuelle qu'aurait
