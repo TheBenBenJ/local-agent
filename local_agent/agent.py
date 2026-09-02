@@ -9,7 +9,7 @@ from collections import Counter
 
 from dataclasses import replace
 
-from . import agent_tools, gateway, prompts, risk, router, tasks
+from . import agent_tools, extract, gateway, prompts, risk, router, tasks
 from .config import Config
 from .files import GuardrailError
 from .mlx import MlxClient, MlxError
@@ -307,14 +307,11 @@ def _facts_from_evidence(ctx: agent_tools.ToolContext) -> tuple[list[str], list[
     findings: list[str] = []
     files: list[str] = []
     locations: list[str] = []
-    root = ""
     for identifier in ctx.evidence_ids:
         row = ctx.db.get(identifier)
         payload = row.get("payload") or {}
         summary = str(row.get("summary") or "").strip()
         findings.append(f"{identifier}: {summary[:180]}")
-        if payload.get("high_signal") and not root:
-            root = str(payload.get("content") or payload.get("failure") or payload.get("example") or summary)[:240]
         path = str(row.get("path") or "").strip()
         if path and path not in files:
             files.append(path)
@@ -333,7 +330,36 @@ def _facts_from_evidence(ctx: agent_tools.ToolContext) -> tuple[list[str], list[
             loc = f"{name}:{line}" if name and line else name
             if loc and loc not in locations:
                 locations.append(loc)
-    return findings, files, locations, root
+    return findings, files, locations, _root_from_evidence(ctx)
+
+
+def _root_from_evidence(ctx: agent_tools.ToolContext) -> str:
+    best = ""
+    best_score = -1
+    for identifier in ctx.evidence_ids:
+        row = ctx.db.get(identifier)
+        payload = row.get("payload") or {}
+        if not payload.get("high_signal"):
+            continue
+        example = str(payload.get("example") or payload.get("failure") or "").strip()
+        content = str(payload.get("content") or "").strip()
+        summary = str(row.get("summary") or "").strip()
+        if "high-signal /" in summary and not example:
+            continue
+        blob = example or content or summary
+        if not blob:
+            continue
+        score = 0
+        if extract.KEEP_SIGNATURE.search(blob):
+            score += 8
+        if "ERROR" in blob or "Exception" in blob or "TypeError" in blob:
+            score += 2
+        if payload.get("occurrence") == "last":
+            score += 1
+        if score > best_score:
+            best_score = score
+            best = blob
+    return best[:240]
 
 
 def _merge_payload(payload: dict, ctx: agent_tools.ToolContext) -> dict:

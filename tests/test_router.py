@@ -118,6 +118,7 @@ def main() -> None:
         )
         packed = report.summary + " " + " ".join(report.findings) + " " + " ".join(str(item.get("content") or "") for item in report.evidence)
         check("REDUCE without LLM keeps cause", "InvoiceService" in packed)
+        check("REDUCE summary cites cause", "InvoiceService" in report.summary)
         check("REDUCE extract skips LLM", report.stats.get("local_llm_calls") == 0)
         check("REDUCE tier", report.stats.get("tier") == "reduce")
         from local_agent.store import Store

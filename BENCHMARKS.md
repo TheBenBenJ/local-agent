@@ -132,6 +132,7 @@ Log REDUCE extract-only: 0 local LLM calls. Tiny DIRECT: 0 local LLM calls. A RE
 ## False positives / negatives
 
 - Log REDUCE prose can still invent a worker-id story when an LLM call runs. Extract-only skips that call. Treat LLM prose as **partial**, evidence as **correct**.
+- Extract-only REDUCE used to put `N high-signal / M signatures` in ROOT CAUSE (first stored row). It now prefers a ROOT_CAUSE / ERROR excerpt (`InvoiceService.getTotal called on null invoice`).
 - Tiny DIRECT packet > source: no false identifiers in this run.
 - AGENT vision: keyword hit on `DIV`/`HCP`; not a human recette sign-off.
 - Session A first packet missed `pixel`/`SHA256` (quality 0). Fixed; remasured quality 4.
