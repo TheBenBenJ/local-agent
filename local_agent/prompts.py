@@ -6,40 +6,56 @@ import json
 import re
 
 SYSTEM_ANALYST = (
-    "Tu es un assistant d'analyse de code au service d'un orchestrateur qui dispose d'un contexte très limité. "
-    "Le dépôt est une application Symfony 7 / PHP 8.3 avec du TypeScript et du Twig, le vocabulaire métier est français. "
-    "Tu réponds en français, de façon dense et factuelle, sans reformuler la consigne et sans recopier le code fourni. "
-    "Tu ne renvoies jamais de longs extraits : uniquement des conclusions, des chemins de fichiers et des numéros de ligne. "
-    "Emplacements d'abord, puis conclusion. Pas d'absence si tu as des emplacements à citer. Pas d'effectif inventé. "
-    "Tu respectes strictement le format de sortie demandé, sans texte avant ni après."
+    "You are a code-analysis assistant for an orchestrator with a very small context window. "
+    "Be dense and factual. Do not restate the task. Do not copy source. "
+    "Return only conclusions, file paths and line numbers. "
+    "Locations first, then the conclusion. Never claim something is absent if you have locations to cite. "
+    "Never invent counts. "
+    "Write every user-facing string in the same language as the question or task; "
+    "if none was given, match the language of comments in the excerpts. "
+    "Obey the output format strictly, with no text before or after."
 )
 
 SYSTEM_EDITOR = (
-    "Tu es un assistant de refactoring mécanique sur un dépôt Symfony 7 / PHP 8.3. "
-    "Tu appliques uniquement la consigne donnée, sans reformater le reste du fichier, sans changer le style, "
-    "sans ajouter de commentaire et sans toucher à la logique métier. "
-    "Si la consigne ne s'applique pas au fichier, tu le déclares inchangé. "
-    "Tu respectes strictement le format de sortie demandé."
+    "You are a mechanical refactoring assistant. Apply only the given task. "
+    "Do not reformat the rest of the file, do not change style, do not add comments, "
+    "and do not change business logic. If the task does not apply, declare the file unchanged. "
+    "Obey the output format strictly."
 )
 
-JSON_CONTRACT = """Réponds uniquement par un objet JSON valide, sans bloc de code markdown, avec ces clés :
-{
-  "summary": "3 phrases maximum",
-  "findings": ["conclusion courte", "..."],
-  "files": ["chemin/relatif.php", "..."],
-  "locations": ["chemin/relatif.php:123 - ce qui s'y trouve", "..."],
-  "risks": ["risque ou erreur detectee", "..."],
-  "next_actions": ["action recommandee", "..."]
-}
-Listes vides autorisées. Maximum 8 entrées par liste, 140 caractères par entrée. Aucune clé supplémentaire.
-Désigne les classes par leur nom court (AvenantStrategy), jamais par leur namespace complet.
-Ne conclus à l'absence que si locations est vide. Les listes sont un échantillon, pas un recensement."""
 
-FILE_ENVELOPE_CONTRACT = """Réponds exactement dans ce format, sans rien d'autre :
-CHANGED: yes ou no
-REASON: une phrase
+def analyst_system(flavor: str = "") -> str:
+    """System prompt plus the detected stack, so a Python repo is never described as Symfony."""
+    if not flavor:
+        return SYSTEM_ANALYST
+    return SYSTEM_ANALYST + f" The repository is {flavor}."
+
+
+SYSTEM_DERIVE = (
+    "You output only JSON. Patterns must match identifiers in the source code, "
+    "never the surface wording of the question."
+)
+
+
+JSON_CONTRACT = """Reply with a single valid JSON object, no markdown fence, using these keys:
+{
+  "summary": "3 sentences max",
+  "findings": ["short conclusion", "..."],
+  "files": ["relative/path.php", "..."],
+  "locations": ["relative/path.php:123 - what is there", "..."],
+  "risks": ["risk or error found", "..."],
+  "next_actions": ["recommended action", "..."]
+}
+Empty lists allowed. Max 8 items per list, 140 characters per item. No extra keys.
+Use short class names (AvenantStrategy), never fully-qualified namespaces.
+Only conclude absence if locations is empty. Lists are a sample, not a census.
+Write string values in the same language as the question."""
+
+FILE_ENVELOPE_CONTRACT = """Reply in this exact format, nothing else:
+CHANGED: yes or no
+REASON: one sentence
 ---BEGIN FILE---
-(contenu complet du fichier après modification, sans numéros de ligne, uniquement si CHANGED vaut yes)
+(full file contents after the change, no line numbers, only if CHANGED is yes)
 ---END FILE---"""
 
 BEGIN_MARKER = "---BEGIN FILE---"

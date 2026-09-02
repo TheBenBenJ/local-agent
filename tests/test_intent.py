@@ -54,7 +54,7 @@ def main() -> None:
         summary=absence,
         locations=["src/Form/FichePaieType.php:40 - NumberType heures10Pourcent"],
     ))
-    check("préfixe le résumé si emplacements non vides", flagged.summary.startswith("Ne pas conclure à l'absence"))
+    check("préfixe le résumé si emplacements non vides", flagged.summary.startswith("Do not conclude absence"))
     check("ajoute un risque", bool(flagged.risks))
 
     untouched = _reconcile_absence(Report(

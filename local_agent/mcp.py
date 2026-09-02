@@ -21,35 +21,35 @@ SERVER_VERSION = "1.0.0"
 DEFAULT_PROTOCOL = "2024-11-05"
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 
-_PATH = {"type": "string", "description": "Chemin relatif au dépôt (défaut : racine)"}
+_PATH = {"type": "string", "description": "Path relative to the repository root (default: root)"}
 _REPO = {
     "type": "string",
     "description": (
-        "Racine absolue du dépôt à analyser. À renseigner uniquement si le dépôt visé n'est pas celui "
-        "configuré par défaut, que local_ping affiche."
+        "Absolute path of the repository to analyse. Set this only when it is not the default root "
+        "shown by local_ping."
     ),
 }
 _GLOBS = {
     "type": "array",
     "items": {"type": "string"},
-    "description": "Filtres ripgrep, ex. ['*.php', '!*Test.php']",
+    "description": "ripgrep globs, e.g. ['*.php', '!*Test.php']",
 }
 
 TOOLS: list[dict] = [
     {
         "name": "local_search",
         "description": (
-            "Réponds à une question de localisation dans le code sans charger de fichiers dans ton contexte. "
-            "Le modèle local dérive des motifs ripgrep, exécute la recherche, lit lui-même les extraits utiles "
-            "et renvoie une synthèse compacte avec fichiers et numéros de ligne. "
-            "À privilégier dès qu'une réponse exigerait de lire plus de deux ou trois fichiers. "
-            "Si tu connais déjà le nom d'une classe, d'un attribut ou d'un champ, greppe : "
-            "local_search sert à la question ouverte, pas à localiser un symbole nommé."
+            "Answer a code-location question without loading files into your context. "
+            "The local model derives ripgrep patterns, runs the search, reads useful excerpts itself "
+            "and returns a compact synthesis with files and line numbers. "
+            "Prefer this as soon as an answer would require reading more than two or three files. "
+            "If you already know a class, attribute or field name, grep: local_search is for open "
+            "questions, not for locating a named symbol."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Question en langage naturel"},
+                "query": {"type": "string", "description": "Question in natural language"},
                 "path": _PATH,
                 "globs": _GLOBS,
                 "repo": _REPO,
@@ -60,19 +60,19 @@ TOOLS: list[dict] = [
     {
         "name": "local_analyze",
         "description": (
-            "Analyse un répertoire ou un fichier avec une consigne libre, en découpant automatiquement en lots. "
-            "Modes : inspect (consigne libre), summarize (rôle de chaque fichier), duplicates (implémentations "
-            "dupliquées). Utilise-le pour l'exploration de gros répertoires, les résumés de nombreux fichiers, "
-            "la détection de doublons et la classification en masse."
+            "Analyse a directory or file against a free-form task, chunking automatically. "
+            "Modes: inspect (free-form), summarize (role of each file), duplicates (repeated "
+            "implementations). Use it for large-tree exploration, multi-file summaries, duplicate "
+            "detection and bulk classification."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": _PATH,
-                "task": {"type": "string", "description": "Consigne précise adressée au modèle local"},
+                "task": {"type": "string", "description": "Precise instruction for the local model"},
                 "mode": {"type": "string", "enum": ["inspect", "summarize", "duplicates"], "default": "inspect"},
                 "globs": _GLOBS,
-                "max_files": {"type": "integer", "description": "Plafond de fichiers pour cet appel"},
+                "max_files": {"type": "integer", "description": "File cap for this call"},
                 "repo": _REPO,
             },
             "required": ["path"],
@@ -81,8 +81,8 @@ TOOLS: list[dict] = [
     {
         "name": "local_review",
         "description": (
-            "Première passe de revue de code sur un chemin : bugs probables, incohérences, duplications, écarts "
-            "aux conventions. Tu gardes la revue finale et les arbitrages, le modèle local produit le premier tri."
+            "First-pass code review on a path: likely bugs, inconsistencies, duplication, convention "
+            "drift. You keep the final review and the calls; the local model does the first triage."
         ),
         "inputSchema": {
             "type": "object",
@@ -93,26 +93,26 @@ TOOLS: list[dict] = [
     {
         "name": "local_fix",
         "description": (
-            "Modification mécanique des fichiers d'un chemin (renommage, boilerplate, docblocks, erreurs "
-            "simples), en deux temps par défaut : mode=propose (défaut) génère les changements, renvoie le "
-            "diff et un patch_id sans rien écrire ; mode=apply avec patch_id applique la proposition exacte, "
-            "refusée si un fichier a changé entre-temps. mode=direct écrit immédiatement, à réserver aux "
-            "changements triviaux. Garde-fous : fichiers non committés préservés, syntaxe vérifiée, "
-            "réécriture invraisemblable annulée. À réserver au mécanique, jamais aux migrations sensibles."
+            "Mechanical edits on files under a path (renames, boilerplate, docblocks, simple errors), "
+            "in two steps by default: mode=propose (default) generates the changes, returns the diff "
+            "and a patch_id without writing; mode=apply with patch_id applies that exact proposal, "
+            "refused if a file changed in between. mode=direct writes immediately, for trivial edits "
+            "only. Guardrails: dirty files preserved, syntax checked, implausible rewrites rolled back. "
+            "Mechanical only, never sensitive migrations."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": _PATH,
-                "task": {"type": "string", "description": "Consigne de modification, précise et mécanique"},
+                "task": {"type": "string", "description": "Precise, mechanical edit instruction"},
                 "mode": {"type": "string", "enum": ["propose", "apply", "direct"], "default": "propose"},
-                "patch_id": {"type": "string", "description": "Identifiant renvoyé par un mode=propose"},
+                "patch_id": {"type": "string", "description": "Id returned by a mode=propose call"},
                 "globs": _GLOBS,
                 "max_files": {"type": "integer"},
                 "allow_dirty": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Autorise à toucher des fichiers déjà modifiés, à éviter",
+                    "description": "Allow touching already-dirty files, avoid this",
                 },
                 "repo": _REPO,
             },
@@ -122,18 +122,18 @@ TOOLS: list[dict] = [
     {
         "name": "local_test_analysis",
         "description": (
-            "Exécute un contrôle du projet (tests, lint, analyse statique), filtre les succès répétitifs et ne "
-            "renvoie que les échecs classés, les causes probables et les statistiques. Les contrôles disponibles "
-            "viennent du fichier .local-agent.json du dépôt ou d'un preset selon le langage (Symfony : phpstan, "
-            "phpunit, cs-fixer, twig, yaml, eslint ; Node : test, lint, types ; Python : pytest, ruff, mypy). "
-            "local_ping les liste. Aucune commande écrivante n'est accessible."
+            "Run a project check (tests, lint, static analysis), filter repetitive successes and return "
+            "only classified failures, likely causes and stats. Available checks come from the repo's "
+            ".local-agent.json or a language preset (Symfony: phpstan, phpunit, cs-fixer, twig, yaml, "
+            "eslint; Node: test, lint, types; Python: pytest, ruff, mypy). local_ping lists them. "
+            "No write commands are exposed."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "description": "Nom du contrôle, défaut : le premier disponible"},
-                "target": {"type": "string", "description": "Chemin ciblé, fortement recommandé pour les tests"},
-                "filter": {"type": "string", "description": "Filtre sur le nom des tests, si le contrôle l'accepte"},
+                "kind": {"type": "string", "description": "Check name, default: the first available"},
+                "target": {"type": "string", "description": "Target path, strongly recommended for tests"},
+                "filter": {"type": "string", "description": "Test-name filter, if the check accepts one"},
                 "repo": _REPO,
             },
         },
@@ -141,16 +141,16 @@ TOOLS: list[dict] = [
     {
         "name": "local_log_analysis",
         "description": (
-            "Analyse un fichier ou répertoire de logs volumineux. Le filtrage, le regroupement par signature et "
-            "le comptage se font localement avec ripgrep, le modèle local ne raisonne que sur les signatures "
-            "dominantes. Ne renvoie que les erreurs, motifs, causes probables et extraits utiles."
+            "Analyse a large log file or directory. Filtering, grouping by signature and counting run "
+            "locally with ripgrep; the local model only reasons over dominant signatures. Returns errors, "
+            "patterns, likely causes and useful excerpts."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Chemin du log, ex. var/log/dev.log"},
+                "path": {"type": "string", "description": "Log path, e.g. var/log/dev.log"},
                 "task": {"type": "string"},
-                "patterns": {"type": "array", "items": {"type": "string"}, "description": "Motifs ripgrep explicites"},
+                "patterns": {"type": "array", "items": {"type": "string"}, "description": "Explicit ripgrep patterns"},
                 "repo": _REPO,
             },
             "required": ["path"],
@@ -159,26 +159,25 @@ TOOLS: list[dict] = [
     {
         "name": "local_diff_review",
         "description": (
-            "Passe en revue un diff git sans le charger dans ton contexte : le modèle local lit le diff, "
-            "signale bugs probables, restes de débogage et risques de régression, et propose un message de "
-            "commit. Les appels ajoutés sont vérifiés dans le dépôt : une méthode déjà définie ailleurs "
-            "n'est pas signalée comme manquante. Périmètres : worktree (tout le non committé), staged "
-            "(l'index), branch (écart avec la branche de base). À privilégier dès qu'un diff dépasse "
-            "quelques dizaines de lignes."
+            "Review a git diff without loading it into your context: the local model reads the diff, "
+            "flags likely bugs, leftover debug and regression risks, and suggests a commit message. "
+            "Added calls are checked against the repo: a method already defined elsewhere is not flagged "
+            "as missing. Scopes: worktree (all uncommitted), staged (index), branch (delta from the base "
+            "branch). Prefer this as soon as a diff is more than a few dozen lines."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "scope": {"type": "string", "enum": ["worktree", "staged", "branch"], "default": "worktree"},
-                "base": {"type": "string", "description": "Branche de base pour scope=branch (défaut : main/master/develop)"},
-                "task": {"type": "string", "description": "Consigne de revue spécifique, sinon revue générale"},
+                "base": {"type": "string", "description": "Base branch for scope=branch (default: main/master/develop)"},
+                "task": {"type": "string", "description": "Specific review instruction, otherwise a general review"},
                 "repo": _REPO,
             },
         },
     },
     {
         "name": "local_ping",
-        "description": "Vérifie que le serveur MLX répond et affiche la configuration effective du local-agent.",
+        "description": "Check that the local LLM server responds and show the effective local-agent configuration.",
         "inputSchema": {"type": "object", "properties": {"repo": _REPO}},
     },
 ]
@@ -238,13 +237,13 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
     if name == "local_ping":
         try:
             ensure_usable_root(config)
-            root_state = "dépôt git valide"
+            root_state = "valid git repository"
         except GuardrailError as error:
-            root_state = f"INUTILISABLE : {error}"
+            root_state = f"UNUSABLE: {error}"
         try:
             checks = sorted(shell.load_checks(config))
         except ValueError as error:
-            checks = [f"illisibles : {error}"]
+            checks = [f"unreadable: {error}"]
         payload = {
             "mlx": client.ping(),
             "repo_root_state": root_state,
@@ -280,11 +279,11 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
         mode = str(arguments.get("mode") or "propose")
         if mode == "apply":
             if not arguments.get("patch_id"):
-                raise ValueError("mode=apply exige patch_id, renvoyé par un mode=propose préalable")
+                raise ValueError("mode=apply requires patch_id, returned by a prior mode=propose call")
             report = edit.apply_patch(config, str(arguments["patch_id"]))
         else:
             if not arguments.get("task"):
-                raise ValueError("task est obligatoire en mode propose ou direct")
+                raise ValueError("task is required in propose or direct mode")
             report = edit.fix(
                 config,
                 client,
@@ -317,7 +316,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             task=arguments.get("task"),
         )
     else:
-        raise ValueError(f"outil inconnu : {name}")
+        raise ValueError(f"unknown tool: {name}")
 
     text = render_markdown(report, config)
     source = report.stats.get("source_caracteres")
@@ -363,7 +362,7 @@ class Server:
             return self._call(identifier, params)
         if identifier is None:
             return None
-        return self._error(identifier, -32601, f"méthode non supportée : {method}")
+        return self._error(identifier, -32601, f"unsupported method: {method}")
 
     def _call(self, identifier, params: dict) -> dict:
         name = str(params.get("name") or "")
@@ -377,16 +376,16 @@ class Server:
                 self.session_saved += saved
                 totals = _bump_totals(saved)
                 text += (
-                    f"\n\nÉconomie estimée : ~{saved // 4} tokens cet appel · "
-                    f"~{self.session_saved // 4} tokens sur {self.session_calls} appel(s) cette session · "
-                    f"~{totals['saved_chars'] // 4} tokens sur {totals['calls']} appel(s) au total."
+                    f"\n\nEstimated savings: ~{saved // 4} tokens this call · "
+                    f"~{self.session_saved // 4} tokens across {self.session_calls} call(s) this session · "
+                    f"~{totals['saved_chars'] // 4} tokens across {totals['calls']} call(s) lifetime."
                 )
             return self._result(identifier, {"content": [{"type": "text", "text": text}], "isError": False})
         except (GuardrailError, MlxError, ValueError, KeyError) as error:
-            message = f"local-agent ({name}) a refusé ou échoué : {error}"
+            message = f"local-agent ({name}) refused or failed: {error}"
         except Exception as error:  # noqa: BLE001
             print(traceback.format_exc(), file=sys.stderr)
-            message = f"local-agent ({name}) erreur interne : {type(error).__name__} {error}"
+            message = f"local-agent ({name}) internal error: {type(error).__name__} {error}"
         _log_usage(name, start, len(message), error=True)
         return self._result(
             identifier,
@@ -415,7 +414,7 @@ def serve() -> None:
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
-            print("local-agent MCP : ligne JSON invalide ignorée", file=sys.stderr)
+            print("local-agent MCP: ignored invalid JSON line", file=sys.stderr)
             continue
         response = server.handle(message)
         if response is None:

@@ -25,17 +25,16 @@ from .report import Report
 
 ANALYSIS_PRESETS: dict[str, str] = {
     "review": (
-        "Fais une première passe de revue de code : bugs probables, incohérences, duplications, "
-        "écarts aux conventions Symfony, dette évidente. Ignore les préférences de style cosmétique."
+        "First-pass code review: likely bugs, inconsistencies, duplication, convention drift, "
+        "obvious debt. Ignore cosmetic style preferences."
     ),
-    "inspect": "Inspecte le code et réponds précisément à la consigne, en citant fichiers et lignes.",
+    "inspect": "Inspect the code and answer the task precisely, citing files and line numbers.",
     "summarize": (
-        "Résume le rôle de chaque fichier et l'organisation d'ensemble, en 1 ligne par fichier maximum, "
-        "puis dégage la structure générale."
+        "Summarize each file's role in one line maximum, then the overall structure."
     ),
     "duplicates": (
-        "Repère les implémentations dupliquées ou quasi identiques (même logique répétée, helpers redondants) "
-        "et indique pour chaque doublon les fichiers et lignes concernés."
+        "Find duplicated or near-identical implementations (repeated logic, redundant helpers) "
+        "and list files and lines for each duplicate."
     ),
 }
 
@@ -101,7 +100,7 @@ def _ask(
     # relance coûte quelques secondes, un rapport illisible coûte l'appel entier.
     if _looks_like_raw_json(str(payload.get("summary") or "")):
         retried = client.complete(
-            prompt + "\n\nRappel strict : un unique objet JSON valide et refermé, sans aucun texte autour.",
+            prompt + "\n\nStrict reminder: a single valid, closed JSON object, with no surrounding text.",
             system,
             max_tokens=max_tokens,
             temperature=temperature
@@ -177,22 +176,25 @@ _ABSENCE = re.compile(
 )
 
 
+ABSENCE_PREFIX = "Do not conclude absence / Ne pas conclure à l'absence"
+
+
 def _claims_absence(text: str) -> bool:
     return bool(text and _ABSENCE.search(text))
 
 
 def _reconcile_absence(report: Report) -> Report:
-    """La section Emplacements prime : une conclusion d'absence n'est recevable que si elle est vide."""
+    """Locations win: an absence claim is only valid when that section is empty."""
     if not report.locations:
         return report
     accused = [report.summary, *report.findings]
     if not any(_claims_absence(text) for text in accused):
         return report
     notice = (
-        f"Ne pas conclure à l'absence : {len(report.locations)} emplacement(s) listé(s). "
-        "La section Emplacements prime sur le résumé."
+        f"{ABSENCE_PREFIX}: {len(report.locations)} location(s) listed. "
+        "The Locations section takes precedence over the summary."
     )
-    if not report.summary.startswith("Ne pas conclure à l'absence"):
+    if not report.summary.startswith("Do not conclude absence"):
         report.summary = f"{notice} {report.summary}".strip()
     if notice not in report.risks:
         report.risks.insert(0, notice)
@@ -209,8 +211,8 @@ def _flag_partial_sample(report: Report, omissions: list[str]) -> Report:
     if not retenues:
         return report
     report.summary = (
-        f"Réponse établie sur un échantillon ({' ; '.join(retenues)}) : "
-        f"une énumération tirée de ce rapport peut être incomplète.\n\n{report.summary}"
+        f"Sample-based answer / Réponse établie sur un échantillon ({' ; '.join(retenues)}) : "
+        f"an enumeration from this report may be incomplete.\n\n{report.summary}"
     )
     return report
 
@@ -237,17 +239,17 @@ def _fallback_patterns(query: str) -> list[str]:
 
 
 _FLAVOR_BY_EXTENSION = {
-    "php": "un dépôt Symfony/PHP (identifiants camelCase, classes en PascalCase, clés de configuration YAML)",
-    "py": "un dépôt Python (fonctions et variables snake_case, constantes en MAJUSCULES_SOULIGNÉES)",
-    "ts": "un dépôt TypeScript (identifiants camelCase, types en PascalCase)",
-    "js": "un dépôt JavaScript (identifiants camelCase)",
+    "php": "a PHP/Symfony repository (camelCase identifiers, PascalCase classes, YAML config keys)",
+    "py": "a Python repository (snake_case functions and variables, UPPER_SNAKE constants)",
+    "ts": "a TypeScript repository (camelCase identifiers, PascalCase types)",
+    "js": "a JavaScript repository (camelCase identifiers)",
 }
 
 _flavor_cache: dict[str, str] = {}
 
 
 def _repo_flavor(config: Config) -> str:
-    """Le langage dominant se lit dans les fichiers suivis, les fichiers marqueurs étant souvent absents."""
+    """Dominant language is read from tracked files; marker files are often missing."""
     key = str(config.repo_root)
     if key not in _flavor_cache:
         listing = shell.git(config, ["ls-files"], timeout=30)
@@ -258,37 +260,42 @@ def _repo_flavor(config: Config) -> str:
         dominant = tally.most_common(1)
         _flavor_cache[key] = (
             _FLAVOR_BY_EXTENSION[dominant[0][0]] if dominant
-            else "un dépôt de code (identifiants anglais, conventions du langage dominant)"
+            else "a code repository (English identifiers, dominant-language conventions)"
         )
     return _flavor_cache[key]
 
 
+def _analyst(config: Config) -> str:
+    return prompts.analyst_system(_repo_flavor(config))
+
+
 def _derive_patterns(client: MlxClient, query: str, flavor: str, avoid: list[str] | None = None) -> list[str]:
     avoid_hint = (
-        f"Motifs déjà essayés sans succès, proposes-en d'autres : {', '.join(avoid)}.\n" if avoid else ""
+        f"Patterns already tried unsuccessfully, propose others: {', '.join(avoid)}.\n" if avoid else ""
     )
     prompt = (
         "Transforme cette question en 3 à 5 expressions régulières ripgrep permettant de localiser le code "
-        f"concerné dans {flavor}, dont le vocabulaire métier est français : noms de classes, de méthodes, "
-        "de constantes, de clés de configuration, termes métier.\n"
-        "Les identifiants du code sont en anglais : traduis les notions françaises de la question en "
-        "identifiants anglais probables (« propriété » donne property, « connexion » donne connection).\n"
+        f"concerné dans {flavor}. Extraire noms de classes, de méthodes, de constantes, de clés de "
+        "configuration, termes métier.\n"
+        "Les identifiants du code sont en anglais : traduis les notions non anglaises de la question en "
+        "identifiants anglais probables (« propriété » donne property, « connexion » donne connection, "
+        "« garde-fous » donne DENIED ou guardrail).\n"
+        "Si la question est déjà en anglais, utilise ces identifiants et des radicaux courts, pas des noms inventés.\n"
         "Des radicaux courts et sûrs valent mieux que des identifiants complets inventés : delegat plutôt "
         "que shouldDelegateToModel.\n"
         "Contraintes : exactement 3 à 5 motifs, chacun tenant en un mot ou une expression courte, un seul "
         "concept par motif, jamais deux notions collées dans le même motif, sans variantes spéculatives ni "
         "énumération de synonymes.\n"
-        "Si la question nomme déjà un type (classe, service, trait) et demande ce qu'il fait, cherche les "
-        "usages et le vocabulaire de l'action (champs, assignations, appels). N'émets jamais de motif de "
-        "déclaration (`class Nom`, `trait Nom`, `function Nom`) : ça ne sert que si la question demande "
-        "où le symbole est défini.\n"
+        "Si la question nomme déjà un type et demande ce qu'il fait, cherche les usages et le vocabulaire "
+        "de l'action. N'émets jamais de motif de déclaration (`class Nom`, `trait Nom`, `function Nom`) : "
+        "ça ne sert que si la question demande où le symbole est défini.\n"
         + avoid_hint
         + f"Question : {query}\n\n"
         'Réponds uniquement par {"patterns": ["...", "..."]}'
     )
     # Température nulle : un motif qui varie d'un appel à l'autre fait varier la réponse entière.
     try:
-        completion = client.complete(prompt, prompts.SYSTEM_ANALYST, max_tokens=300, temperature=0.0)
+        completion = client.complete(prompt, prompts.SYSTEM_DERIVE, max_tokens=300, temperature=0.0)
     except MlxError:
         return _fallback_patterns(query)
 
@@ -575,10 +582,10 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
 
     if not matches:
         return Report(
-            title="Recherche locale",
-            summary=f"Aucune correspondance pour la question posée sous {path or '.'}.",
-            findings=[f"Motifs essayés : {', '.join(patterns)}"],
-            next_actions=["Reformuler la question ou élargir le chemin de recherche"],
+            title="Local search",
+            summary=f"No matches for the question under {path or '.'}.",
+            findings=[f"Patterns tried: {', '.join(patterns)}"],
+            next_actions=["Reword the question or widen the search path"],
             stats={"patterns": len(patterns), "matches": 0},
         )
 
@@ -591,35 +598,35 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
     # produiraient un brut hors sujet rendu avec l'assurance d'une réponse.
     if semantic and total <= budget.PASSTHROUGH_MATCHES and not budget.is_worth_delegating(match_lines):
         return budget.passthrough(
-            "Recherche locale",
+            "Local search",
             match_lines,
-            reason=f"{total} correspondance(s) seulement, la synthèse coûterait plus que les lignes",
+            reason=f"{total} match(es) only, synthesis would cost more than the lines",
             stats={"patterns": len(patterns), "matches_total": total, "files": len(counts)},
-            details=f"Motifs : {', '.join(patterns)}"
+            details=f"Patterns: {', '.join(patterns)}"
         )
     snippets = _snippet_context(config, matches, budget=config.chunk_chars)
 
-    # Consigne d'exhaustivité réservée aux énumérations : le modèle conclut parfois sur le premier
-    # élément vu, alors même que la fenêtre d'extraits contenait les autres.
+    # Exhaustiveness hint for enumerations: the model sometimes stops at the first item even
+    # when the excerpt window contained the others.
     enumeration_hint = (
-        "La question demande une énumération : recense chaque élément distinct visible dans les extraits "
-        "avant de conclure, sans en omettre.\n"
+        "This is an enumeration question: list every distinct item visible in the excerpts "
+        "before concluding, omit none.\n"
         if _is_enumeration(query) else ""
     )
     prompt = (
-        f"Question : {query}\n\n"
-        f"Motifs ripgrep utilisés : {', '.join(patterns)}\n"
-        f"Fichiers les plus touchés : {', '.join(f'{f} ({c})' for f, c in counts.most_common(10))}\n\n"
-        f"Correspondances brutes :\n{match_lines}\n\n"
-        f"Extraits de code autour des correspondances :\n{snippets}\n\n"
-        "Réponds à la question en t'appuyant uniquement sur ces éléments. Distingue le point d'entrée principal "
-        "des occurrences secondaires. Locations d'abord ; pas d'absence si elles ne sont pas vides. "
-        f"Seul effectif autorisé : {total} correspondance(s) dans {len(counts)} fichier(s), sinon « au moins N dans l'échantillon ».\n"
+        f"Question: {query}\n\n"
+        f"ripgrep patterns used: {', '.join(patterns)}\n"
+        f"Hottest files: {', '.join(f'{f} ({c})' for f, c in counts.most_common(10))}\n\n"
+        f"Raw matches:\n{match_lines}\n\n"
+        f"Code excerpts around the matches:\n{snippets}\n\n"
+        "Answer using only these elements. Distinguish the main entry point from secondary "
+        "occurrences. Locations first; no absence claim if they are not empty. "
+        f"Only allowed count: {total} match(es) in {len(counts)} file(s), otherwise 'at least N in the sample'.\n"
         + enumeration_hint + "\n" + prompts.JSON_CONTRACT
     )
-    payload = _ask(client, prompts.SYSTEM_ANALYST, prompt, temperature=0.0)
+    payload = _ask(client, _analyst(config), prompt, temperature=0.0)
     report = _payload_to_report(
-        "Recherche locale",
+        "Local search",
         payload,
         stats={
             "patterns": len(patterns),
@@ -632,7 +639,7 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
     report = _reconcile_absence(_verify_paths(report, set(counts), config))
     return _flag_partial_sample(
         report,
-        [f"{len(matches)} correspondances examinées sur {total}" if len(matches) < total else ""]
+        [f"{len(matches)} matches examined of {total}" if len(matches) < total else ""]
     )
 
 
@@ -653,9 +660,9 @@ def analyze(
 
     if not files:
         return Report(
-            title=f"Analyse locale ({mode})",
-            summary=f"Aucun fichier analysable sous {path or '.'} après application des garde-fous.",
-            next_actions=["Vérifier le chemin ou assouplir les filtres --glob"],
+            title=f"Local analysis ({mode})",
+            summary=f"No analysable file under {path or '.'} after applying guardrails.",
+            next_actions=["Check the path or relax --glob filters"],
         )
 
     chunk_set = build_chunks(config, files)
@@ -665,56 +672,56 @@ def analyze(
     joined = "\n".join(chunks)
     if not budget.is_worth_delegating(joined, budget.PASSTHROUGH_CONTENT_CHARS):
         return budget.passthrough(
-            f"Analyse locale ({mode})",
+            f"Local analysis ({mode})",
             joined,
-            reason=f"{len(files)} fichier(s) pour {len(joined.strip())} caractères, plus court qu'une synthèse",
+            reason=f"{len(files)} file(s) for {len(joined.strip())} characters, shorter than a synthesis",
             stats={"files_examined": len(files), "files_found": total},
-            details=f"Consigne non déléguée : {instruction}"
+            details=f"Task not delegated: {instruction}"
         )
 
     payloads: list[dict] = []
     errors: list[str] = []
     for index, chunk in enumerate(chunks, start=1):
         prompt = (
-            f"Consigne : {instruction}\n"
-            f"Cadre : {preset}\n"
-            f"Lot {index}/{len(chunks)} de fichiers du dépôt (lignes numérotées).\n\n"
+            f"Task: {instruction}\n"
+            f"Frame: {preset}\n"
+            f"Chunk {index}/{len(chunks)} of repository files (numbered lines).\n\n"
             f"{chunk}\n\n" + prompts.JSON_CONTRACT
         )
         try:
-            payloads.append(_ask(client, prompts.SYSTEM_ANALYST, prompt))
+            payloads.append(_ask(client, _analyst(config), prompt))
         except MlxError as error:
-            errors.append(f"lot {index} : {error}")
+            errors.append(f"chunk {index}: {error}")
 
     if not payloads:
         return Report(
-            title=f"Analyse locale ({mode})",
-            summary="Le modèle local n'a produit aucune analyse exploitable.",
+            title=f"Local analysis ({mode})",
+            summary="The local model produced no usable analysis.",
             errors=errors,
         )
 
     merged = prompts.merge_payloads(payloads)
     if len(payloads) > 1:
         digest = "\n".join(
-            f"- lot {index}: {p.get('summary')} | " + " ; ".join(list(p.get("findings") or [])[:5])
+            f"- chunk {index}: {p.get('summary')} | " + " ; ".join(list(p.get("findings") or [])[:5])
             for index, p in enumerate(payloads, start=1)
         )
         prompt = (
-            f"Consigne initiale : {instruction}\n\n"
-            f"Analyses partielles par lot :\n{digest}\n\n"
-            f"Fichiers concernés repérés : {', '.join(list(merged.get('files') or [])[:30])}\n\n"
-            "Produis une synthèse unique, dédoublonnée et hiérarchisée par importance. Sois bref, "
-            "l'orchestrateur n'a que peu de contexte disponible.\n\n" + prompts.JSON_CONTRACT
+            f"Original task: {instruction}\n\n"
+            f"Per-chunk partial analyses:\n{digest}\n\n"
+            f"Files spotted: {', '.join(list(merged.get('files') or [])[:30])}\n\n"
+            "Produce a single synthesis, deduplicated and ranked by importance. Be brief, "
+            "the orchestrator has little context left.\n\n" + prompts.JSON_CONTRACT
         )
         try:
             merged = prompts.merge_payloads(
-                [_ask(client, prompts.SYSTEM_ANALYST, prompt, max_tokens=max(config.max_completion_tokens, 2600))]
+                [_ask(client, _analyst(config), prompt, max_tokens=max(config.max_completion_tokens, 2600))]
             )
         except MlxError as error:
-            errors.append(f"synthèse : {error}")
+            errors.append(f"synthesis: {error}")
 
     report = _payload_to_report(
-        f"Analyse locale ({mode})",
+        f"Local analysis ({mode})",
         merged,
         stats={
             "files_analyzed": len(files),
@@ -726,15 +733,15 @@ def analyze(
     report.errors = errors
     if total > len(files):
         report.next_actions.append(
-            f"{total - len(files)} fichiers non analysés (limite de {max_files or config.max_files} fichiers par appel)"
+            f"{total - len(files)} files not analysed (limit of {max_files or config.max_files} files per call)"
         )
     report = _reconcile_absence(_verify_paths(report, {item.relative for item in files}, config))
     return _flag_partial_sample(
         report,
         [
-            f"{chunk_set.files_included} fichiers lus sur {total} trouvés"
+            f"{chunk_set.files_included} files read of {total} found"
             if total > chunk_set.files_included else "",
-            f"{chunk_set.files_truncated} fichiers coupés faute de place"
+            f"{chunk_set.files_truncated} files truncated for lack of space"
             if chunk_set.files_truncated else ""
         ]
     )
@@ -768,10 +775,10 @@ def analyze_logs(
     if not matches:
         size = target.stat().st_size if target.is_file() else 0
         return Report(
-            title="Analyse de logs",
-            summary=f"Aucune ligne d'erreur détectée dans {path} ({size} octets scannés).",
+            title="Log analysis",
+            summary=f"No error line found in {path} ({size} bytes scanned).",
             stats={"matches": 0},
-            next_actions=["Fournir des motifs explicites via patterns si le format de log est atypique"],
+            next_actions=["Pass explicit patterns if the log format is unusual"],
         )
 
     clusters: dict[str, dict] = {}
@@ -788,16 +795,16 @@ def analyze_logs(
     )
 
     prompt = (
-        f"Consigne : {task or 'Identifie les erreurs dominantes, leurs causes probables et ce qui mérite investigation.'}\n"
-        f"Source : {path}\n"
-        f"{len(matches)} lignes retenues sur {total} correspondances, regroupées en {len(clusters)} signatures.\n\n"
-        f"Signatures les plus fréquentes :\n{digest}\n\n"
-        "Regroupe par cause racine probable, distingue le bruit récurrent des anomalies réelles.\n\n"
+        f"Task: {task or 'Identify the dominant errors, their likely causes, and what is worth investigating.'}\n"
+        f"Source: {path}\n"
+        f"{len(matches)} lines kept of {total} matches, grouped into {len(clusters)} signatures.\n\n"
+        f"Most frequent signatures:\n{digest}\n\n"
+        "Group by likely root cause. Distinguish recurring noise from real anomalies.\n\n"
         + prompts.JSON_CONTRACT
     )
-    payload = _ask(client, prompts.SYSTEM_ANALYST, prompt)
+    payload = _ask(client, _analyst(config), prompt)
     report = _payload_to_report(
-        "Analyse de logs",
+        "Log analysis",
         payload,
         stats={
             "lines_matched": len(matches),
@@ -810,8 +817,8 @@ def analyze_logs(
     return _flag_partial_sample(
         report,
         [
-            f"{len(matches)} lignes retenues sur {total}" if len(matches) < total else "",
-            f"{len(ranked)} signatures examinées sur {len(clusters)}" if len(ranked) < len(clusters) else ""
+            f"{len(matches)} lines kept of {total}" if len(matches) < total else "",
+            f"{len(ranked)} signatures examined of {len(clusters)}" if len(ranked) < len(clusters) else ""
         ]
     )
 
@@ -855,7 +862,7 @@ def check(
     checks = shell.load_checks(config)
     if not checks:
         raise ValueError(
-            f"aucun contrôle défini pour ce dépôt : déclarer des checks dans {shell.CHECKS_FILE} à la racine"
+            f"no checks defined for this repository: declare checks in {shell.CHECKS_FILE} at the root"
         )
     kind = kind or next(iter(checks))
     argv, spec = shell.build_check_command(checks, kind, target, filter_expression)
@@ -868,22 +875,22 @@ def check(
         "source_caracteres": len(result.output),
     })
     base = Report(
-        title=f"Contrôle local : {spec['label']}",
+        title=f"Local check: {spec['label']}",
         stats=stats,
-        details=f"Commande : `{result.command}`",
+        details=f"Command: `{result.command}`",
     )
 
     if result.exit_code == 0 and not filtered.strip():
-        base.summary = "Contrôle passé."
+        base.summary = "Check passed."
         base.stats = {"exit_code": 0}
         base.details = ""
         return base
     if result.timed_out:
-        base.summary = f"Commande interrompue par timeout après {config.command_timeout}s."
-        base.risks = ["Résultat partiel, augmenter LOCAL_AGENT_COMMAND_TIMEOUT si nécessaire"]
+        base.summary = f"Command interrupted by timeout after {config.command_timeout}s."
+        base.risks = ["Partial result, raise LOCAL_AGENT_COMMAND_TIMEOUT if needed"]
         return base
     if not filtered.strip():
-        base.summary = f"Commande sortie en code {result.exit_code} sans sortie exploitable."
+        base.summary = f"Command exited with code {result.exit_code} and no usable output."
         return base
 
     # Sortie déjà courte : la synthèse pèserait plus lourd que la sortie qu'elle résume.
@@ -891,23 +898,23 @@ def check(
         return budget.passthrough(
             base.title,
             filtered,
-            reason=f"sortie de {len(filtered.strip())} caractères, déjà plus courte qu'une synthèse",
+            reason=f"output of {len(filtered.strip())} characters, already shorter than a synthesis",
             stats=stats,
             details=base.details
         )
 
     prompt = (
-        f"Sortie filtrée de : {result.command}\n"
-        f"Code de sortie : {result.exit_code}\n"
-        f"Lignes conservées : {stats['lines_kept']} sur {stats['lines_total']}\n\n"
+        f"Filtered output of: {result.command}\n"
+        f"Exit code: {result.exit_code}\n"
+        f"Lines kept: {stats['lines_kept']} of {stats['lines_total']}\n\n"
         f"{filtered}\n\n"
-        "Classe les problèmes par nature et par fichier, indique les causes probables et ce qui bloque. "
-        "Ne recopie pas les stack traces.\n\n" + prompts.JSON_CONTRACT
+        "Classify issues by kind and file, give likely causes and what is blocking. "
+        "Do not copy stack traces.\n\n" + prompts.JSON_CONTRACT
     )
     try:
-        payload = _ask(client, prompts.SYSTEM_ANALYST, prompt)
+        payload = _ask(client, _analyst(config), prompt)
     except MlxError as error:
-        base.summary = f"Commande exécutée (code {result.exit_code}) mais synthèse locale indisponible."
+        base.summary = f"Command ran (code {result.exit_code}) but local synthesis is unavailable."
         base.errors = [str(error)]
         return base
 
@@ -925,7 +932,7 @@ DIFF_SCOPES: dict[str, list[str]] = {
 
 def _resolve_diff_args(config: Config, scope: str, base: str | None) -> list[str]:
     if scope not in DIFF_SCOPES:
-        raise ValueError(f"périmètre inconnu : {scope}. Disponibles : {', '.join(sorted(DIFF_SCOPES))}")
+        raise ValueError(f"unknown scope: {scope}. Available: {', '.join(sorted(DIFF_SCOPES))}")
     args = list(DIFF_SCOPES[scope])
     if scope == "branch":
         reference = base or next(
@@ -934,7 +941,7 @@ def _resolve_diff_args(config: Config, scope: str, base: str | None) -> list[str
             None
         )
         if not reference:
-            raise ValueError("aucune branche de base trouvée (main, master, develop) : préciser base")
+            raise ValueError("no base branch found (main, master, develop): pass base")
         args.append(f"{reference}...HEAD")
     return args
 
@@ -1006,7 +1013,7 @@ def _downgrade_known_symbols(report: Report, resolved: dict[str, str]) -> Report
     for risk in report.risks:
         hit = next((name for name in resolved if name in risk), None)
         if hit and _MISSING_CLAIM.search(risk):
-            note = f"Vérifié : {hit} est défini ({resolved[hit]}), pas une méthode nouvelle."
+            note = f"Verified: {hit} is defined ({resolved[hit]}), not a new method."
             if note not in report.findings:
                 report.findings.append(note)
             continue
@@ -1026,16 +1033,16 @@ def diff_review(
     args = _resolve_diff_args(config, scope, base)
     result = shell.git(config, [*args, "--no-color"], timeout=config.command_timeout)
     if result.exit_code != 0:
-        raise ValueError(f"git {' '.join(args)} a échoué : {result.stderr.strip()[:300]}")
+        raise ValueError(f"git {' '.join(args)} failed: {result.stderr.strip()[:300]}")
     diff = result.stdout
-    title = f"Revue de diff ({scope})"
+    title = f"Diff review ({scope})"
 
     if not diff.strip():
         return Report(
             title=title,
-            summary=f"Aucun changement dans le périmètre {scope}.",
+            summary=f"No changes in scope {scope}.",
             stats={"files": 0},
-            next_actions=["Vérifier le périmètre : worktree, staged, ou branch avec base"],
+            next_actions=["Check the scope: worktree, staged, or branch with base"],
         )
 
     sections = _split_diff_by_file(diff)
@@ -1060,36 +1067,36 @@ def diff_review(
             omitted.append(name)
             continue
         if len(block) > config.chunk_chars:
-            block = block[: config.chunk_chars].rsplit("\n", 1)[0] + "\n[... fichier tronqué ...]\n"
+            block = block[: config.chunk_chars].rsplit("\n", 1)[0] + "\n[... file truncated ...]\n"
         packed.append(block)
         used += len(block)
 
     instruction = (
         task or (
-            "Fais une revue de ces changements : bugs probables, cas limites oubliés, restes de débogage, "
-            "incohérences avec le code environnant visible dans le diff, risques de régression. "
-            "Ignore le style cosmétique."
+            "Review these changes: likely bugs, missed edge cases, leftover debug, "
+            "inconsistencies with surrounding code visible in the diff, regression risks. "
+            "Ignore cosmetic style."
         )
     ) + (
-        " Ajoute en dernière ligne de next_actions une proposition de message de commit préfixée « Commit : »."
-        " Une seconde boucle n'est pas un double traitement si une garde du diff exclut déjà les éléments vus."
+        " Add as the last next_actions item a commit-message proposal prefixed with 'Commit: '."
+        " A second loop is not double-processing if a guard in the diff already excludes seen items."
     )
     resolved = _resolve_diff_symbols(config, _calls_in_added_lines(diff))
     known = ""
     if resolved:
-        listing = "\n".join(f"- {name} : {place}" for name, place in resolved.items())
+        listing = "\n".join(f"- {name}: {place}" for name, place in resolved.items())
         known = (
-            "\n\nSymboles appelés dans le diff, déjà définis ailleurs dans le dépôt "
-            "(ne pas les signaler comme manquants) :\n" + listing + "\n"
+            "\n\nSymbols called in the diff that already exist elsewhere in the repo "
+            "(do not flag them as missing):\n" + listing + "\n"
         )
     prompt = (
-        f"Consigne : {instruction}\n\n"
-        f"Diff git ({scope}, {len(sections)} fichiers) :\n\n"
+        f"Task: {instruction}\n\n"
+        f"Git diff ({scope}, {len(sections)} files):\n\n"
         + "".join(packed)
         + known
         + "\n" + prompts.JSON_CONTRACT
     )
-    payload = _ask(client, prompts.SYSTEM_ANALYST, prompt)
+    payload = _ask(client, _analyst(config), prompt)
     report = _payload_to_report(
         title,
         payload,
@@ -1099,5 +1106,5 @@ def diff_review(
     report = _reconcile_absence(_verify_paths(report, {name for name, _ in sections}, config))
     return _flag_partial_sample(
         report,
-        [f"{len(omitted)} fichiers non examinés faute de place : {', '.join(omitted[:5])}" if omitted else ""]
+        [f"{len(omitted)} files not reviewed for lack of space: {', '.join(omitted[:5])}" if omitted else ""]
     )

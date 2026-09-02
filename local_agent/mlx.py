@@ -51,16 +51,16 @@ class MlxClient:
                 return json.loads(response.read().decode("utf-8", errors="replace"))
         except urllib.error.HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")[:400]
-            raise MlxError(f"HTTP {error.code} sur {path} : {detail}") from error
+            raise MlxError(f"HTTP {error.code} on {path}: {detail}") from error
         except urllib.error.URLError as error:
             raise MlxError(
-                f"serveur MLX injoignable sur {self.config.base_url} ({error.reason}). "
-                "Vérifier que le serveur local tourne et que LOCAL_LLM_BASE_URL est correct."
+                f"local LLM server unreachable at {self.config.base_url} ({error.reason}). "
+                "Check that the server is running and LOCAL_LLM_BASE_URL is correct."
             ) from error
         except TimeoutError as error:
-            raise MlxError(f"timeout après {timeout or self.config.timeout}s sur {path}") from error
+            raise MlxError(f"timeout after {timeout or self.config.timeout}s on {path}") from error
         except json.JSONDecodeError as error:
-            raise MlxError(f"réponse non JSON sur {path}") from error
+            raise MlxError(f"non-JSON response on {path}") from error
 
     def models(self) -> list[dict]:
         payload = self._request("/models", timeout=15)
@@ -86,7 +86,7 @@ class MlxClient:
     def ping(self) -> dict:
         models = self.models()
         loaded = [m for m in models if m.get("loaded") or m.get("state") == "ready"]
-        completion = self.complete("Réponds exactement: PONG", "Tu es un service de test.", max_tokens=8, timeout=60)
+        completion = self.complete("Reply with exactly: PONG", "You are a ping service.", max_tokens=8, timeout=60)
         return {
             "base_url": self.config.base_url,
             "model": self.resolve_model(),
@@ -117,7 +117,7 @@ class MlxClient:
         data = self._request("/chat/completions", payload, timeout=timeout)
         choices = data.get("choices") or []
         if not choices:
-            raise MlxError("réponse MLX sans choix exploitable")
+            raise MlxError("LLM response had no usable choice")
         message = choices[0].get("message") or {}
         text = message.get("content") or ""
         if not text and message.get("reasoning_content"):

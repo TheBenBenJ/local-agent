@@ -35,7 +35,7 @@ def passthrough(
     """Rend la preuve brute sans appeler le modèle, en disant pourquoi."""
     report = Report(
         title=title,
-        summary=f"Brut renvoyé sans synthèse : {reason}.",
+        summary=f"Raw output, no synthesis: {reason}.",
         stats=dict(stats or {}, delegue=False, brut_caracteres=len(raw.strip()))
     )
     report.details = f"{details}\n\n{raw.strip()}" if details else raw.strip()

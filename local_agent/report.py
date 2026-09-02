@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .config import Config
 
-TRUNCATION_NOTICE = "\n\n[sortie tronquée par LOCAL_AGENT_MAX_OUTPUT_TOKENS]"
+TRUNCATION_NOTICE = "\n\n[truncated by LOCAL_AGENT_MAX_OUTPUT_TOKENS]"
 
 
 @dataclass
@@ -49,7 +49,7 @@ def _section(name: str, items: list[str], limit: int = 25) -> list[str]:
     for item in items[:limit]:
         lines.append(f"- {item}")
     if len(items) > limit:
-        lines.append(f"- (+{len(items) - limit} autres)")
+        lines.append(f"- (+{len(items) - limit} more)")
     lines.append("")
     return lines
 
@@ -58,28 +58,28 @@ def render_markdown(report: Report, config: Config) -> str:
     lines = [f"# {report.title}", ""]
     if report.summary:
         lines += [report.summary.strip(), ""]
-    lines += _section("Conclusions", report.findings)
-    lines += _section("Fichiers concernés", report.files, limit=40)
-    lines += _section("Emplacements", report.locations, limit=40)
-    lines += _section("Risques et erreurs détectés", report.risks)
-    lines += _section("Modifications réalisées", report.changes, limit=40)
-    lines += _section("Prochaines actions", report.next_actions, limit=10)
+    lines += _section("Findings", report.findings)
+    lines += _section("Files", report.files, limit=40)
+    lines += _section("Locations", report.locations, limit=40)
+    lines += _section("Risks", report.risks)
+    lines += _section("Changes", report.changes, limit=40)
+    lines += _section("Next actions", report.next_actions, limit=10)
     if report.errors:
-        lines += _section("Échecs de l'agent local", report.errors)
+        lines += _section("Local-agent failures", report.errors)
     stats = dict(report.stats)
     source_chars = stats.pop("source_caracteres", None)
     if stats:
         rendered = ", ".join(f"{key}={value}" for key, value in stats.items())
-        lines += ["## Statistiques", rendered, ""]
+        lines += ["## Stats", rendered, ""]
     if report.details:
-        lines += ["## Détails", report.details.strip(), ""]
+        lines += ["## Details", report.details.strip(), ""]
     text = "\n".join(lines).strip()
-    # Rendre l'économie visible à chaque appel : c'est la raison d'être de l'outil.
+    # Make the saving visible on every call: that is the point of the tool.
     if isinstance(source_chars, int) and source_chars > len(text):
         ratio = source_chars / max(1, len(text))
         text += (
-            f"\n\nContexte évité : ~{source_chars} caractères examinés localement, "
-            f"rapport de {len(text)} caractères, compression ~{ratio:.0f}x."
+            f"\n\nContext avoided: ~{source_chars} characters examined locally, "
+            f"report of {len(text)} characters, ~{ratio:.0f}x compression."
         )
     return clamp(text, config)
 

@@ -77,6 +77,14 @@ Un modèle MoE non-reasoning d'environ 20 Go est le bon profil : les tâches du 
 synthèse encadrée, la réflexion préalable coûte des secondes sans gagner en justesse. Avec `mlx-serve`,
 permuter se fait sans redémarrage : `POST /v1/unload-model` puis `POST /v1/load-model {"model": "..."}`.
 
+## Language
+
+MCP tool descriptions, report section titles (`Locations`, `Findings`, `Stats`) and savings footers
+are in English, so any orchestrator can read the schema. The local model writes findings in the
+**same language as the question or task**: a French query still gets a French answer. That behaviour
+is covered by the accuracy bench. Absence and sampling guards stay bilingual so existing French
+rules (`Ne pas conclure à l'absence`, `Réponse établie sur un échantillon`) keep matching.
+
 ## Emplacement et périmètre
 
 Tout vit dans `~/.local-agent/`, hors des dépôts sur lesquels il travaille. La racine du dépôt à

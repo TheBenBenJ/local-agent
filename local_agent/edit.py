@@ -61,14 +61,14 @@ def apply_patch(config: Config, patch_id: str) -> Report:
     """Applique une proposition figée, en refusant toute source modifiée entre-temps."""
     bundle_path = PATCH_DIR / f"{patch_id}.json"
     if not bundle_path.is_file():
-        raise ValueError(f"proposition inconnue : {patch_id}. Relancer un mode propose.")
+        raise ValueError(f"unknown proposal: {patch_id}. Run a propose pass again.")
     payload = json.loads(bundle_path.read_text(encoding="utf-8"))
     body = json.dumps(payload["files"], ensure_ascii=False, sort_keys=True)
     if _sha256(body) != payload["integrity"]:
-        raise ValueError(f"proposition {patch_id} corrompue : intégrité invalide, ne pas appliquer.")
+        raise ValueError(f"proposal {patch_id} is corrupt: invalid integrity, do not apply.")
     if str(config.repo_root) != payload["repo"]:
         raise ValueError(
-            f"proposition {patch_id} établie pour {payload['repo']}, pas pour {config.repo_root}."
+            f"proposal {patch_id} was made for {payload['repo']}, not for {config.repo_root}."
         )
 
     changes: list[str] = []
@@ -79,36 +79,36 @@ def apply_patch(config: Config, patch_id: str) -> Report:
         try:
             current, _ = read_text(target, config.fix_max_file_size * 3)
         except Exception as error:
-            risks.append(f"{entry['path']} : illisible ({error}), non appliqué")
+            risks.append(f"{entry['path']}: unreadable ({error}), not applied")
             continue
         if _sha256(current) != entry["before_sha256"]:
             risks.append(
-                f"{entry['path']} : modifié depuis la proposition, non appliqué. Reproposer sur la version actuelle."
+                f"{entry['path']}: changed since the proposal, not applied. Re-propose on the current version."
             )
             continue
         _write_atomic(target, entry["after"])
         valid, detail = _syntax_check(config, target)
         if not valid:
             _write_atomic(target, current)
-            risks.append(f"{entry['path']} : écriture annulée, {detail}")
+            risks.append(f"{entry['path']}: write rolled back, {detail}")
             continue
-        changes.append(f"{entry['path']} : appliqué ({entry['reason']})")
+        changes.append(f"{entry['path']}: applied ({entry['reason']})")
         touched.append(entry["path"])
 
     diff_stat = shell.git(config, ["diff", "--stat", "--", *touched]).stdout.strip() if touched else ""
     bundle_path.unlink(missing_ok=True)
     return Report(
-        title="Application de proposition",
+        title="Proposal applied",
         summary=(
-            f"Proposition {patch_id} : {len(touched)} fichier(s) appliqué(s), "
-            f"{len(risks)} refusé(s)."
+            f"Proposal {patch_id}: {len(touched)} file(s) applied, "
+            f"{len(risks)} refused."
         ),
         files=touched,
         changes=changes,
         risks=risks,
         stats={"patch_id": patch_id, "files_applied": len(touched)},
         details=diff_stat,
-        next_actions=["Valider avec `git diff` avant tout commit"] if touched else [],
+        next_actions=["Check with `git diff` before any commit"] if touched else [],
     )
 
 
@@ -190,7 +190,7 @@ def fix(
     """Mode par défaut : propose. Rien n'est écrit tant que l'orchestrateur n'a pas relu le diff et
     demandé l'application exacte de la proposition, identifiée et vérifiée par hash."""
     if mode not in ("propose", "direct"):
-        raise ValueError(f"mode inconnu : {mode}. Disponibles : propose, direct (apply passe par apply_patch).")
+        raise ValueError(f"unknown mode: {mode}. Available: propose, direct (apply goes through apply_patch).")
     propose = mode == "propose" or dry_run
     target = resolve_path(config, path)
     tree = shell.working_tree_state(config)
@@ -200,9 +200,9 @@ def fix(
     files, total = discover_files(config, target, globs=globs, max_files=limit)
     if not files:
         return Report(
-            title="Correction locale",
-            summary=f"Aucun fichier éligible sous {path or '.'}.",
-            next_actions=["Vérifier le chemin ou les filtres --glob"],
+            title="Local fix",
+            summary=f"No eligible file under {path or '.'}.",
+            next_actions=["Check the path or --glob filters"],
         )
 
     changes: list[str] = []
@@ -229,9 +229,9 @@ def fix(
 
         numbered = "\n".join(f"{index}| {line}" for index, line in enumerate(original.splitlines(), start=1))
         prompt = (
-            f"Consigne : {task}\n"
-            f"Fichier : {item.relative}\n\n"
-            f"Contenu actuel (numéros de ligne à retirer dans ta réponse) :\n{numbered}\n\n"
+            f"Task: {task}\n"
+            f"File: {item.relative}\n\n"
+            f"Current contents (strip line numbers from your reply):\n{numbered}\n\n"
             + prompts.FILE_ENVELOPE_CONTRACT
         )
         try:
@@ -294,11 +294,11 @@ def fix(
         diff_stat = "\n".join(previews)
 
     report = Report(
-        title="Correction locale",
+        title="Local fix",
         summary=(
-            f"{len(touched)} fichier(s) {'proposé(s)' if propose else 'modifié(s)'} sur {len(files)} "
-            f"examiné(s), {len(skipped)} ignoré(s), branche {tree['branch']}."
-            + (f" Aucune écriture : proposition {patch_id} en attente d'application." if patch_id else "")
+            f"{len(touched)} file(s) {'proposed' if propose else 'changed'} of {len(files)} "
+            f"examined, {len(skipped)} skipped, branch {tree['branch']}."
+            + (f" Nothing written: proposal {patch_id} waiting to be applied." if patch_id else "")
         ),
         files=touched,
         changes=changes,
@@ -313,11 +313,11 @@ def fix(
         report.next_actions = []
     elif patch_id:
         report.next_actions = [
-            f"Relire le diff ci-dessus puis appliquer tel quel : local_fix mode=apply patch_id={patch_id}",
-            "La proposition sera refusée si un fichier a changé entre-temps"
+            f"Review the diff above then apply as-is: local_fix mode=apply patch_id={patch_id}",
+            "The proposal will be refused if a file changed in the meantime"
         ]
     else:
-        report.next_actions = ["Valider avec `git diff` avant tout commit"]
+        report.next_actions = ["Check with `git diff` before any commit"]
     return report
 
 
