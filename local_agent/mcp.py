@@ -10,11 +10,12 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import edit, shell, tasks
+from .budget import billed_chars
 from .config import Config, get_config
 from .files import GuardrailError, ensure_usable_root
 from .mlx import MlxClient, MlxError
 from .report import clamp, render_markdown
+from . import edit, shell, tasks
 
 SERVER_NAME = "local-agent"
 SERVER_VERSION = "1.0.0"
@@ -43,6 +44,8 @@ TOOLS: list[dict] = [
             "The local model derives ripgrep patterns, runs the search, reads useful excerpts itself "
             "and returns a compact synthesis with files and line numbers. "
             "Prefer this as soon as an answer would require reading more than two or three files. "
+            "Not for screenshots, tickets, or instructions you must follow verbatim: only bulky "
+            "repository text you would otherwise load. "
             "If you already know a class, attribute or field name, grep: local_search is for open "
             "questions, not for locating a named symbol."
         ),
@@ -63,7 +66,8 @@ TOOLS: list[dict] = [
             "Analyse a directory or file against a free-form task, chunking automatically. "
             "Modes: inspect (free-form), summarize (role of each file), duplicates (repeated "
             "implementations). Use it for large-tree exploration, multi-file summaries, duplicate "
-            "detection and bulk classification."
+            "detection and bulk classification. Not for screenshots, tickets, or instructions you "
+            "must follow verbatim."
         ),
         "inputSchema": {
             "type": "object",
@@ -163,7 +167,8 @@ TOOLS: list[dict] = [
             "flags likely bugs, leftover debug and regression risks, and suggests a commit message. "
             "Added calls are checked against the repo: a method already defined elsewhere is not flagged "
             "as missing. Scopes: worktree (all uncommitted), staged (index), branch (delta from the base "
-            "branch). Prefer this as soon as a diff is more than a few dozen lines."
+            "branch). Prefer this as soon as a diff is more than a few dozen lines. Cheap second "
+            "look even when a finding later proves false: verify, do not skip the review."
         ),
         "inputSchema": {
             "type": "object",
@@ -187,7 +192,15 @@ USAGE_LOG = Path.home() / ".local-agent" / "usage.jsonl"
 USAGE_TOTALS = Path.home() / ".local-agent" / "usage-totals.json"
 
 
-def _log_usage(tool: str, start: float, output_chars: int, *, error: bool, saved_chars: int = 0) -> None:
+def _log_usage(
+    tool: str,
+    start: float,
+    output_chars: int,
+    *,
+    error: bool,
+    saved_chars: int = 0,
+    compounded_chars: int = 0,
+) -> None:
     """Journal d'appels pour mesurer les économies réelles, jamais bloquant pour la réponse."""
     try:
         entry = {
@@ -196,6 +209,7 @@ def _log_usage(tool: str, start: float, output_chars: int, *, error: bool, saved
             "duree_s": round(time.monotonic() - start, 1),
             "sortie_caracteres": output_chars,
             "economise_caracteres": saved_chars,
+            "economise_compose_caracteres": compounded_chars,
             "erreur": error,
         }
         USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -205,9 +219,9 @@ def _log_usage(tool: str, start: float, output_chars: int, *, error: bool, saved
         pass
 
 
-def _bump_totals(saved_chars: int) -> dict:
+def _bump_totals(saved_chars: int, compounded_chars: int = 0) -> dict:
     """Cumul de vie du serveur, persistant : c'est la preuve chiffrée de ce que l'outil rapporte."""
-    totals = {"calls": 0, "saved_chars": 0}
+    totals = {"calls": 0, "saved_chars": 0, "compounded_chars": 0}
     try:
         if USAGE_TOTALS.is_file():
             totals.update(json.loads(USAGE_TOTALS.read_text(encoding="utf-8")))
@@ -215,6 +229,7 @@ def _bump_totals(saved_chars: int) -> dict:
         pass
     totals["calls"] = int(totals.get("calls") or 0) + 1
     totals["saved_chars"] = int(totals.get("saved_chars") or 0) + saved_chars
+    totals["compounded_chars"] = int(totals.get("compounded_chars") or 0) + compounded_chars
     try:
         USAGE_TOTALS.parent.mkdir(parents=True, exist_ok=True)
         USAGE_TOTALS.write_text(json.dumps(totals), encoding="utf-8")
@@ -331,6 +346,7 @@ class Server:
         self.protocol = DEFAULT_PROTOCOL
         self.session_calls = 0
         self.session_saved = 0
+        self.session_compounded = 0
 
     def handle(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -370,15 +386,23 @@ class Server:
         start = time.monotonic()
         try:
             text, saved = _handle_tool(name, arguments, self.config, self.client)
-            _log_usage(name, start, len(text), error=False, saved_chars=saved)
+            remaining = max(1, self.config.compound_turns)
+            compounded = billed_chars(saved, remaining)
+            _log_usage(
+                name, start, len(text), error=False, saved_chars=saved, compounded_chars=compounded
+            )
             if name != "local_ping":
                 self.session_calls += 1
                 self.session_saved += saved
-                totals = _bump_totals(saved)
+                self.session_compounded += compounded
+                totals = _bump_totals(saved, compounded)
                 text += (
-                    f"\n\nEstimated savings: ~{saved // 4} tokens this call · "
-                    f"~{self.session_saved // 4} tokens across {self.session_calls} call(s) this session · "
-                    f"~{totals['saved_chars'] // 4} tokens across {totals['calls']} call(s) lifetime."
+                    f"\n\nOne-shot context avoided: ~{saved // 4} tokens this call · "
+                    f"~{self.session_saved // 4} this session · ~{totals['saved_chars'] // 4} lifetime.\n"
+                    f"Estimated billed effect (×{remaining} further turns in the prefix): "
+                    f"~{compounded // 4} this call · ~{self.session_compounded // 4} this session · "
+                    f"~{int(totals.get('compounded_chars') or 0) // 4} lifetime. "
+                    "The same call is worth more at the start of a session than at the end."
                 )
             return self._result(identifier, {"content": [{"type": "text", "text": text}], "isError": False})
         except (GuardrailError, MlxError, ValueError, KeyError) as error:

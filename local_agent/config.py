@@ -105,6 +105,9 @@ class Config:
     max_matches: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_MATCHES", 200))
     fix_max_file_size: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_FIX_MAX_FILE_SIZE", 40_000))
     command_timeout: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_COMMAND_TIMEOUT", 900))
+    compound_turns: int = field(
+        default_factory=lambda: _int_env("LOCAL_AGENT_COMPOUND_TURNS", 25)
+    )
 
     @property
     def max_output_chars(self) -> int:
@@ -121,6 +124,7 @@ class Config:
             "max_file_size": self.max_file_size,
             "max_output_tokens": self.max_output_tokens,
             "chunk_chars": self.chunk_chars,
+            "compound_turns": self.compound_turns,
             "api_key_set": bool(self.api_key),
         }
 

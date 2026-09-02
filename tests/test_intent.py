@@ -114,6 +114,10 @@ diff --git a/src/Foo.php b/src/Foo.php
     check("résout _log_usage dans le dépôt", "_log_usage" in resolved and "mcp.py" in resolved["_log_usage"])
     check("n'invente pas une définition absente", "fonctionInconnueXYZ" not in resolved)
 
+    from local_agent.budget import billed_chars
+    check("effet facturé = one-shot × tours", billed_chars(14_339 * 4, 25) == 14_339 * 4 * 25)
+    check("tours restants au minimum 1", billed_chars(100, 0) == 100)
+
     print("tous les contrôles de revue de diff passent")
 
 

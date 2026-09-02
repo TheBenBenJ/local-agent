@@ -131,10 +131,11 @@ pour les changements triviaux.
 
 ### Observabilité
 
-Chaque réponse se termine par l'économie estimée : tokens évités sur l'appel, cumul de la session, cumul
-de vie (`~/.local-agent/usage-totals.json`). Chaque appel est aussi journalisé en JSONL dans
-`~/.local-agent/usage.jsonl` (outil, durée, tailles, erreur éventuelle) : de quoi vérifier sur la durée
-ce que la délégation rapporte réellement, outil par outil.
+Chaque réponse se termine par deux chiffres : le **one-shot** (contexte non chargé cette fois) et
+l'**effet facturé** (ce one-shot × `LOCAL_AGENT_COMPOUND_TURNS`, défaut 25). Un token non ajouté au
+préfixe n'est pas économisé une fois, il l'est à chaque requête suivante. Mesuré sur une longue session
+Claude : 14 339 one-shot → ~390 000 facturés (~27×). Le même appel vaut plus en début de session qu'à
+la fin. Cumuls dans `~/.local-agent/usage-totals.json` ; journal JSONL dans `usage.jsonl`.
 
 ## Utilisation en ligne de commande
 
@@ -188,6 +189,7 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 | `LOCAL_AGENT_MAX_MATCHES`       | `200`                        | Correspondances ripgrep conservées                           |
 | `LOCAL_AGENT_FIX_MAX_FILE_SIZE` | `40000`                      | Au-delà, un fichier n'est pas réécrit                        |
 | `LOCAL_AGENT_COMMAND_TIMEOUT`   | `900`                        | Timeout des contrôles projet                                 |
+| `LOCAL_AGENT_COMPOUND_TURNS`    | `25`                         | Facteur de tours restants pour l'effet facturé (one-shot × N) |
 | `LOCAL_AGENT_REPO_ROOT`         | racine du dépôt              | Surcharge de la racine, utile pour les tests                  |
 
 Les anciens noms `MLX_*` restent lus en rétrocompatibilité quand la variante `LOCAL_LLM_*` est absente.

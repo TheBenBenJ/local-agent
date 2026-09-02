@@ -19,9 +19,17 @@ PASSTHROUGH_MATCHES = 60
 # reporte le travail sur l'orchestrateur, ce qui ne vaut que si le contenu est plus court qu'une synthèse.
 PASSTHROUGH_CONTENT_CHARS = 1200
 
+# A token never loaded is saved on every later prompt, not once. Measured on a long Claude recette
+# session: 14,339 one-shot tokens → ~390,000 billed effect (~27×). 25 is that order of magnitude.
+
 
 def is_worth_delegating(raw: str, threshold: int = PASSTHROUGH_CHARS) -> bool:
     return len(raw.strip()) > threshold
+
+
+def billed_chars(saved_chars: int, remaining_turns: int) -> int:
+    """One-shot avoided characters scaled by how many later prompts they would have stayed in."""
+    return max(0, int(saved_chars)) * max(1, int(remaining_turns))
 
 
 def passthrough(
