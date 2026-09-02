@@ -2,6 +2,12 @@
 
 ![Keep large context local. Send Claude only what matters.](docs/architecture.jpg)
 
+Give the local runtime the source, not Claude's context window. Local tools and a small local model process large external context before Claude sees it.
+
+> Local-first does not mean LLM-first.
+
+Use the cheapest reliable layer that can solve the task. local-agent is a niche but useful context optimization layer for context-heavy AI coding workflows. It does not replace Claude.
+
 ## Why
 
 Claude Code and Cursor should not do this:
