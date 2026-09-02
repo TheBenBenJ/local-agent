@@ -249,7 +249,7 @@ def _case_vision(config: Config, client: MlxClient | None, no_llm: bool) -> dict
         row.update(_interception(raw, row["local_visible_chars"]))
         row["note"] = "deterministic compare, no local_task"
         return row
-    scoped = Config(repo_root=ROOT, autonomy="read_only", max_runtime=120, max_steps=5)
+    scoped = Config(repo_root=ROOT, autonomy="read_only", max_runtime=120, max_steps=5, vision=True)
     report, error = _run_local(
         scoped,
         client,
@@ -262,7 +262,12 @@ def _case_vision(config: Config, client: MlxClient | None, no_llm: bool) -> dict
     visible = _packet_chars(report)
     row["local_visible_chars"] = visible
     row["latency_s"] = report.stats.get("latency_s")
+    row["timings"] = report.stats.get("timings")
     row["quality"] = _score(report.summary + " ".join(report.findings), ["DIV", "HCP"])
+    row["expected_tier"] = "agent"
+    row["actual_tier"] = report.stats.get("tier")
+    row["routing_correct"] = row["actual_tier"] == row["expected_tier"]
+    row["local_llm_calls"] = report.stats.get("local_llm_calls")
     row.update(_interception(raw, visible))
     return row
 

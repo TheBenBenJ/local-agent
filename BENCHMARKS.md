@@ -36,7 +36,8 @@ Harness routing accuracy on scored cases A+B: **2/2**. Unit routing cases: **8/8
 | B 2.2 MB log, REDUCE extract-only (9B resident, 0 LLM) | 560 953 tok | 866 tok | 560 087 | 99.8% | yes (`InvoiceService`, `null`) | 0.04 s |
 | B same, REDUCE + 35B LLM (before extract-skip) | 560 953 tok | 1 006 tok | 559 947 | 99.8% | yes (`InvoiceService`, `null`) | 4.1 s |
 | B same, baseline B `rg ERROR` | 560 953 tok | 1 319 tok | 559 634 | 99.8% | n/a | 0.005 s |
-| C Two recette screenshots + repo, tier AGENT | 9 563 tok | 2 075 tok | 7 488 | 78.3% | yes (`DIV`, `HCP`) | 13.6 s |
+| C Two recette screenshots + repo, AGENT 9B | 9 563 tok | 1 832 tok | 7 731 | 80.8% | yes (`DIV`, `HCP`) | 5.7 s |
+| C same pair, AGENT 35B (same day) | 9 563 tok | 2 075 tok | 7 488 | 78.3% | yes (`DIV`, `HCP`) | 13.6 s |
 | C same pair, pixel+OCR compare, no LLM | 9 563 tok | 1 400 tok | 8 163 | 85% | partial (`pixel`, not `DIV`) | 0.72 s |
 | E Whitelisted failing check | 20 000 tok (assumed dump) | 86 tok | 19 914 | 99.6% | yes (`TypeError`, `total`) | 0.017 s |
 
@@ -44,7 +45,7 @@ Notes:
 
 - Case A packet is still larger than the 297 B source (235 tok vs 74). The win is **not** compression: it is skipping the local LLM (6.9 s → 0.03 s) and keeping both identifiers.
 - Case B no longer calls a local LLM when high-signal excerpts exist (0.04 s extract vs 4–5 s LLM). The planted cause stays in runtime evidence. `rg ERROR` remains ~800× faster. A 35B/9B sentence on that digest is optional, not the default.
-- Case C with `image://` + `repo://` is routed AGENT (multi-source). Deterministic compare without a repo pointer is faster and smaller. AGENT got `DIV`/`HCP` where compare-only had `pixel` only.
+- Case C with `image://` + `repo://` is routed AGENT (multi-source). On the 9B: 5.7 s, 3 local LLM calls, same `DIV`/`HCP` hits as the 35B at 13.6 s. Deterministic compare without a repo pointer remains faster (0.72 s) and smaller, but misses `DIV`.
 - Case E baseline A (80 kB) is still an assumed PHPUnit-style dump.
 
 ## Quality evaluation (keyword recall, scale 0–4)
@@ -55,7 +56,8 @@ Notes:
 | --- | --- | --- | ---: | ---: |
 | A DIRECT | `require_permission`, `invoice.read` | both | 100% | 4 |
 | B REDUCE | `InvoiceService`, `null` | both | 100% | 4 |
-| C AGENT | `DIV`, `HCP` | both | 100% | 4 |
+| C AGENT 9B | `DIV`, `HCP` | both | 100% | 4 |
+| C AGENT 35B | `DIV`, `HCP` | both | 100% | 4 |
 | C compare no LLM | `DIV`, `pixel` | `pixel` | 50% | 2 |
 | E `run_check` | `TypeError`, `total` | both | 100% | 4 |
 
@@ -68,7 +70,8 @@ Root cause on the log: **correct** (strings present in the packet). The 35B summ
 | A DIRECT (slim, 9B resident unused) | 0.8 ms | ~20 ms (`rg`) | 0 | 0.03 s |
 | B REDUCE extract-only | 0.1 ms | ~40 ms extract | 0 | 0.04 s |
 | B REDUCE + 35B LLM (before skip) | 0.1 ms | 38 ms extract | 4.03 s | 4.1 s |
-| C AGENT | n/a in row | tools inside 13.6 s | included | 13.6 s |
+| C AGENT 9B | 0.1 ms | tools 1.45 s | 4.28 s (3 calls) | 5.7 s |
+| C AGENT 35B | n/a in row | tools inside 13.6 s | included | 13.6 s |
 | C compare no LLM | n/a | 0.72 s | 0 | 0.72 s |
 | E check | n/a | 17 ms | 0 | 0.017 s |
 
@@ -78,14 +81,12 @@ TTFT is not exposed by the mlx-serve HTTP complete call. `local_llm_s` is wall t
 
 Same harness. 9B-only run after unloading the 35B: 2 September 2026, `mlx-community/Qwen3.5-9B-MLX-4bit` resident 5.95 GB, 35B `unloaded`.
 
-| Model | A DIRECT | B REDUCE quality | B REDUCE LLM | Ping | First tool | RAM |
-| ----- | -------- | ---------------- | -----------: | ---: | ---------- | --: |
-| `Qwen3.6-35B-A3B-4bit` | 4/4, 0 LLM | keywords 4/4; prose invented a worker-id story | 4.03 s | n/a | 7 s, no tool (prior) | 20.4 GB |
-| `Qwen3.5-9B-MLX-4bit` (alone) | 4/4, 0 LLM | keywords 4/4; prose named `InvoiceService.getTotal` / null | 4.90 s | 0.18 s | 1.88 s, `search_repo` | 5.95 GB |
+| Model | A DIRECT | B REDUCE | C AGENT recette | Ping | RAM |
+| ----- | -------- | -------- | --------------- | ---: | --: |
+| `Qwen3.6-35B-A3B-4bit` | 4/4, 0 LLM | keywords 4/4; prose invented a worker-id story; 4.03 s LLM | 4/4 `DIV`/`HCP`, 13.6 s | n/a | 20.4 GB |
+| `Qwen3.5-9B-MLX-4bit` (alone) | 4/4, 0 LLM | keywords 4/4 extract-only 0.04 s (0 LLM). Prior LLM prose named `InvoiceService.getTotal` / null in 4.90 s | 4/4 `DIV`/`HCP`, 5.7 s, 3 calls | 0.18 s | 5.95 GB |
 
-With both models loaded, 9B ping was 0.44 s and REDUCE 5.13 s. Alone, ping drops to 0.18 s; REDUCE stays ~5 s (not a dual-load artifact). The 35B MoE is still slightly faster on the long log digest. The 9B is more accurate on that digest and ~3.4× lighter.
-
-Not run on the 9B: recette AGENT vision.
+With both models loaded, 9B ping was 0.44 s and REDUCE 5.13 s. Alone, ping drops to 0.18 s. The 9B is the default: lighter, same recette keywords, faster AGENT loop. The 35B MoE was slightly faster only on a long log digest that extract-only no longer sends to an LLM.
 
 ## Real Session Replay
 
@@ -133,7 +134,7 @@ Not captured.
 
 - Live Jira fetch inside this harness.
 - Live `autonomy=patch` against mlx-serve (scripted in `tests/test_patch_workflow.py`).
-- Sequential small-model vs 35B: **done** (9B alone). See Model Comparison.
+- Sequential small-model vs 35B: **done** (9B alone), including recette AGENT vision.
 - Full 18 M Claude recette session replay (still missing as a billed day).
 - Houtini / delegate-local install.
 
@@ -141,7 +142,7 @@ Not captured.
 
 **Niche but useful.**
 
-DIRECT is the tier that changed the product: the 297 B lookup no longer spends 6.9 s in a 35B that skips `rg`. REDUCE is the tier that saves the most Claude-visible tokens, and extract-only now skips the local LLM when high-signal excerpts exist (0.04 s). AGENT can correlate screenshot + repo but costs 13.6 s where pixel+OCR is 0.72 s.
+DIRECT is the tier that changed the product: the 297 B lookup no longer spends 6.9 s in a 35B that skips `rg`. REDUCE is the tier that saves the most Claude-visible tokens, and extract-only now skips the local LLM when high-signal excerpts exist (0.04 s). AGENT on the 9B correlates screenshot + repo in 5.7 s (was 13.6 s on the 35B); pixel+OCR without a repo pointer remains 0.72 s.
 
 The agent loop is **not** the default value. Use it when the task is actually multi-step.
 
@@ -150,7 +151,7 @@ Default local model: **Qwen3.5-9B-MLX-4bit**.
 ## Next five priorities
 
 1. Replay a billed Claude Code day (eligible vs already-in-thread vs expand), not only on-disk artifacts.
-2. Recette AGENT vision on the 9B (5662 pair was 13.6 s on the 35B).
-3. DIRECT packet still 235 tok vs 74 raw: drop more wrapper or return rg lines only.
-4. Commit + MCP restart (schema and `local_task` description changed earlier).
-5. Slim the compare packet: session A is 511 tok with labels, 437 without. Keep the labels.
+2. DIRECT packet still 235 tok vs 74 raw: drop more wrapper or return rg lines only.
+3. Restart MCP clients on schema 1.3.0 (`local_task` routing description).
+4. Keep pixel/SHA256 labels in the compare packet (511 tok). Do not strip them to recover the old 437.
+5. Live Jira fetch inside the harness (still a fixture).
