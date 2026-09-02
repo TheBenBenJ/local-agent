@@ -6,12 +6,12 @@ import json
 import os
 import time
 from collections import Counter
-
 from dataclasses import replace
+from pathlib import Path
 
 from . import agent_tools, extract, gateway, prompts, risk, router, tasks
 from .config import Config
-from .files import GuardrailError
+from .files import GuardrailError, relative_to_root
 from .mlx import MlxClient, MlxError
 from .ocr import IMAGE_OUTPUT_TOKENS
 from .report import Report
@@ -303,6 +303,16 @@ def _fallback_search(config: Config, client: MlxClient, ctx: agent_tools.ToolCon
     }
 
 
+def _packet_path(ctx: agent_tools.ToolContext, raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        return text
+    return relative_to_root(ctx.config, candidate)
+
+
 def _facts_from_evidence(ctx: agent_tools.ToolContext) -> tuple[list[str], list[str], list[str], str]:
     findings: list[str] = []
     files: list[str] = []
@@ -312,7 +322,7 @@ def _facts_from_evidence(ctx: agent_tools.ToolContext) -> tuple[list[str], list[
         payload = row.get("payload") or {}
         summary = str(row.get("summary") or "").strip()
         findings.append(f"{identifier}: {summary[:180]}")
-        path = str(row.get("path") or "").strip()
+        path = _packet_path(ctx, str(row.get("path") or ""))
         if path and path not in files:
             files.append(path)
         span = str(row.get("lines") or "").strip()
@@ -323,7 +333,7 @@ def _facts_from_evidence(ctx: agent_tools.ToolContext) -> tuple[list[str], list[
         for match in payload.get("matches") or []:
             if not isinstance(match, dict):
                 continue
-            name = str(match.get("file") or "").strip()
+            name = _packet_path(ctx, str(match.get("file") or ""))
             line = match.get("line")
             if name and name not in files:
                 files.append(name)
