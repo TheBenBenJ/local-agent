@@ -159,6 +159,37 @@ Not captured.
 - Full 18 M Claude recette session as **billed** tokens (jsonl classifier exists; the API bill does not).
 - Houtini / delegate-local install.
 
+## Phrasing sensitivity on repo:// (2026-09-02)
+
+Same file, same size (`local_agent/router.py`, ~3093 tokens). Only the wording of the mission changes.
+
+| Mission wording | Tier | local_llm_calls | Latency | Status |
+|---|---|---|---|---|
+| `Where is the deterministic tier routing decided, and which function returns the initial action hint?` | reduce | 1 | 4.3 s | needs_claude |
+| `Locate the definitions of route_task and initial_action_hint.` | direct | 0 | 0.0 s | locations 255 / 168 / 240 |
+
+Mechanism, visible in the packet: the deterministic probe derives its patterns from the words of the mission. Naming the symbols produces `CODE-E5 1/1 matches for route_task` and `CODE-E6 2/2 matches for initial_action_hint`. An interrogative wording produces `CODE-E7 0/0 matches for Locate` in the good case, and in the bad case a false positive: `1/1 matches for Where` on line 40, which is the stopword list itself. That weak hit is not enough for DIRECT, the router falls through to REDUCE, spends one local LLM call and returns needs_claude with confidence 0.35.
+
+The fallback is by design. The cost of the fallback is what this measures: 43x latency and 0 to 1 local LLM call on an identical source, decided by phrasing alone.
+
+Commands:
+
+    LOCAL_AGENT_REPO_ROOT=/Users/benjaminmille/.local-agent ./bin/local-agent --json task \
+      "Where is the deterministic tier routing decided, and which function returns the initial action hint?" \
+      --source "repo://local_agent/router.py"
+
+    LOCAL_AGENT_REPO_ROOT=/Users/benjaminmille/.local-agent ./bin/local-agent --json task \
+      "Locate the definitions of route_task and initial_action_hint." \
+      --source "repo://local_agent/router.py"
+
+Caller guidance already in the tool description ("If you already know a class, attribute or field name, grep") is confirmed by measurement, and extends to `local_task`: name the symbol in the mission when you know it.
+
+## MCP freshness verified (2026-09-02)
+
+`local_ping` with `repo=/Users/benjaminmille/.local-agent` returns `server.git_head 1f532ea4713f`, equal to the CLI. REDUCE locations came back relative (`var/bench.log:1-4`), and `jira://LYSI-5177` routed DIRECT to `fetch_issue` with 0 local LLM calls, 0.6 s, 150 visible tokens, title only, description kept in the store. Priority 2 below is closed for this client.
+
+Jira credentials resolve from the target repo's `.claude/.env.local`, so `jira://` needs `repo` pointed at lysi. With `repo` on local-agent the packet returns `JIRA-E2 Jira is not configured` in DIRECT, 0 LLM.
+
 ## Product verdict (from these runs)
 
 **Niche but useful.**
@@ -172,7 +203,7 @@ Default local model: **Qwen3.5-9B-MLX-4bit**.
 ## Next five priorities
 
 1. Capture billed Claude tokens (usage API or export). Still not available: there is no supported public surface for Cursor/Claude Code bills. jsonl on disk is not the bill.
-2. Restart MCP clients after this tree. CLI `local-agent ping` already returns `server.git_head`. `local_ping` stays stale until the client restarts.
+2. Done for this client: `local_ping` returns `server.git_head 1f532ea4713f`. Re-check after any tree that changes `version.py`.
 3. Keep pixel/SHA256 labels in the compare packet. Session A is 254 tok with findings; do not strip the verdict to recover more.
 4. Live `autonomy=patch` against mlx-serve (scripted only).
 5. DIRECT 101 tok vs 74 raw (`rg` 51). Further cuts drop STATUS or the hit line. Accepted.
