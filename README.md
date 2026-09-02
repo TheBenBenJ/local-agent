@@ -1,436 +1,214 @@
 # local-agent
 
-**Keep code, screenshots, logs and data local. Claude gets an evidence packet, not the raw document.**
+**Local context optimization for AI coding agents.**
 
-1. Claude keeps the hard reasoning.
-2. local-agent acquires and reduces large context locally.
-3. Claude receives evidence, not raw context.
+Give the local runtime the source, not Claude's context window. Local tools and a small local model process large external context before Claude sees it.
 
-Couche locale de réduction de contexte pour un agent de code (Claude Code, Cursor, tout client MCP).
-L'orchestrateur envoie une intention et un chemin. Le brut reste sur la machine : `ripgrep`, git, OCR
-Apple Vision, agrégats, et le modèle local déjà chargé. Claude reçoit un paquet de preuves (500 à
-3 000 tokens) avec des ids pour demander le détail.
+> Local-first does not mean LLM-first.
 
-Un seul checkpoint côté mlx-serve : `mlx-community/Qwen3.5-9B-MLX-4bit` (~6 Go, **texte +
-vision**). Le 35B n'est plus le défaut : même famille, plus léger, meilleur sur la prose REDUCE
-mesurée. Les captures : OCR Vision d'abord, VLM seulement si la grille a un trou. Jamais deux
-modèles chargés en même temps. Les pixels ne quittent pas la machine.
+Use the cheapest reliable layer that can solve the task. local-agent is a niche but useful context optimization layer for context-heavy AI coding workflows. It does not replace Claude. It keeps large raw context local, preserves high-signal evidence, and lets Claude see only what it actually needs.
 
-Règle : Claude ne reçoit jamais le document brut par défaut. Il envoie une **mission + des
-sources** (`repo://`, `image://`, `log://`). Un routeur déterministe choisit le palier le moins cher
-qui suffit : **DIRECT** (rg / OCR / git, zéro LLM local), **REDUCE** (extraction high-signal, synthèse
-locale seulement si l'extrait ne suffit pas), **AGENT** (boucle bornée), ou **CLAUDE** (risque élevé). Drill-down ensuite
-(`local_expand`, `local_image_crop`).
+![local-agent: the orchestrator sends source references, a deterministic router picks DIRECT / REDUCE / AGENT / CLAUDE, and Claude receives a high-signal evidence packet](docs/architecture.jpg)
 
-Les outils fins (`local_search`, `local_image`, `local_fix`, …) restent pour un pas unique déjà
-identifié. Ne pas déléguer 20 lignes déjà chargées.
+## Why
 
-**Positionnement.** Pas « encore un MCP pour un LLM local ». Le local n'est pas alimenté avec le
-contexte de Claude : il lit le dépôt lui-même. Différence avec Houtini, delegate-local et assimilés :
-Claude donne une mission, pas des fichiers déjà lus.
+Claude Code and Cursor should not do this:
 
-![Architecture hybride : l'orchestrateur envoie tâche et chemin, local-agent explore le dépôt et ne renvoie qu'un résumé compact](docs/architecture.jpg)
+```text
+read huge.log
+→ send huge.log to a local model
+```
 
-## Ce que ça rapporte, mesuré
+They should do this:
 
-Le banc **DIRECT → REDUCE → AGENT** (2 septembre 2026, 9B seul) est dans [`BENCHMARKS.md`](BENCHMARKS.md). Extraire :
+```text
+local_task(task="Find the root cause.", sources=["log://var/bench.log"])
+```
 
-| Scenario | Direct avoided | Interception | Correct | Latency |
-| --- | ---: | ---: | --- | ---: |
-| 2.2 MB log, tier REDUCE, extract only | 560 105 tok | 99.8% | yes | 0.04 s |
-| Tiny 297 B repo, tier DIRECT | 0 (packet 101 tok > 74) | 0% | yes | 0.03 s |
-| Recette LYSI-5177, 2 annexes PNG | 34 888 tok | 99.3% | yes (`pixel`, `SHA256`) | 0.8 s |
-| Recette 5662 screenshots + repo, AGENT 9B | 7 731 tok | 80.8% | yes (`DIV`, `HCP`) | 5.7 s |
-| Module `route_task`, DIRECT | 10 833 tok | 99.1% | yes | 0.03 s |
+The MCP reads the file on disk. Claude receives an evidence packet (locations, hashes, ids), not the raw document. The same rule applies to repositories, screenshots, Jira, and Confluence.
 
-Verdict: **niche but useful**. DIRECT and extract-only REDUCE are the value. The 9B is the default local model. A 35B loop is not the product.
+If you already know a symbol name, put it in the mission. If `rg` is enough, use `rg`.
 
-Older volume numbers (Symfony repo, `tests/bench.py`) remain below. They measure specialized tools (`local_log_analysis`, `local_search`), not the `local_task` loop.
+## How it works
 
-### When it helps / when it doesn't
+The figure above is the product: task + source references in, evidence packet out. The router never calls a local LLM to decide which layer to use.
 
-HELPS MOST: large logs (REDUCE), screenshots kept off Claude, noisy test suites, unknown-module exploration.
+| Tier | When | Local LLM |
+| --- | --- | --- |
+| **DIRECT** | Tiny source, named symbol, OCR/compare, Jira/Confluence fetch | 0 |
+| **REDUCE** | Large log, test dump, or single bulky file: deterministic high-signal extract | Only if the extract is not enough |
+| **AGENT** | Genuinely multi-step or multi-source (screenshot + repo, ticket + repo) | Bounded loop, first tool before first LLM |
+| **CLAUDE** | Auth, security, public API, architecture, high-risk change | Skip local; keep Claude |
 
-HELPS LITTLE: architecture talk, short SQL, instructions Claude must read verbatim, context already loaded. Tiny files: DIRECT skips the 35B (0.08 s) but the packet can still exceed the source; `rg` remains smaller. The ~2% on a code-only recette session is real, not a failure of measurement.
+DIRECT and REDUCE are the value. AGENT is not the default path. It is reserved for investigations that actually need several steps.
 
-| Type de session | Potentiel observé ou cible |
-|---|---|
-| Recette / anomalie, code seul (~12,5 % du contexte) | ~2 % d'une session de 18 M |
-| Même session si les captures restent hors du préfixe | cible ~5–7 %, à mesurer |
-| Exploration d'un module inconnu | ~8 % |
-| Gros log / données | 10–30 %+ |
-| Session surtout visuelle | dépend du crop, pas de l'OCR seul |
-
-Banc de volume sur un dépôt Symfony réel de plus de 8 000 fichiers, contre la lecture manuelle
-(détail dans `tests/bench.py`, latences sur un MoE 35B quantifié 4-bit) :
-
-| Tâche | Contexte évité | Compression | Durée |
-|---|---|---|---|
-| Analyse d'un log de 1,3 Mo | ~324 000 tokens | 517x | 13 s |
-| Recherche « comment le projet empêche-t-il X ? » | ~4 700 tokens | 14x | 0,9 s |
-| Recherche traversant beaucoup de fichiers | ~6 400 tokens | 12x | 8,6 s |
-| Synthèse d'un document de 10 Ko | ~2 500 tokens | 5,5x | 7,8 s |
-| Revue d'un diff de 15 Ko | ~3 000 tokens | 5x | 11 s |
-| Revue d'un petit répertoire | négatif (0,8x) | l'outil rend le brut | 9 s |
-| Contrôle projet à sortie courte | négatif (0,9x) | l'outil rend le brut | 1 s |
-
-Les deux dernières lignes sont le garde-fou de frugalité : quand la preuve brute est plus courte qu'une
-synthèse, l'outil la renvoie telle quelle sans appeler le modèle, en disant pourquoi. Justesse mesurée
-contre vérité terrain : 15/15 sur le dépôt client, 12/12 sur ce dépôt (`tests/bench_exactitude.py`).
-
-## Installation
+## Quick start
 
 ```bash
 git clone https://github.com/TheBenBenJ/local-agent ~/.local-agent
 ~/.local-agent/install.sh
 ```
 
-L'installateur enregistre le serveur MCP pour Claude Code (`~/.claude.json`) et Cursor
-(`~/.cursor/mcp.json`) sans écraser une configuration existante. Redémarrer les clients, puis vérifier
-avec l'outil `local_ping`.
-
-## Prérequis
-
-- Python 3.9+ (uniquement la bibliothèque standard, aucune dépendance à installer)
-- `ripgrep` (`rg`)
-- `git`
-- un serveur local avec API compatible OpenAI : `mlx-serve`, Ollama, llama.cpp, LM Studio, vLLM…
-- Docker uniquement pour les contrôles projet du preset Symfony (`phpstan`, `phpunit`…)
-
-## Serveur local
-
-Développé et mesuré contre `mlx-serve` (application MLX Core sur Apple Silicon), mais tout endpoint
-compatible OpenAI convient via `LOCAL_LLM_BASE_URL` :
+Requires Python 3.9+ (stdlib only), `ripgrep`, `git`, and an OpenAI-compatible local server (`mlx-serve` on Apple Silicon is what we measure against). Restart Claude Code / Cursor, then call `local_ping`.
 
 ```bash
-curl -s http://127.0.0.1:11234/v1/models | head -c 200
+~/.local-agent/bin/local-agent doctor
 ~/.local-agent/bin/local-agent ping
 ```
 
-`LOCAL_LLM_MODEL=auto` sélectionne automatiquement le modèle déjà chargé côté serveur, il n'y a donc
-rien à changer en cas de bascule de modèle.
+`ping` reports `server.git_head`. After you change MCP code, restart the client and check that `local_ping.server.git_head` matches the CLI.
 
-### Choix du modèle
+Primary tool: `local_task` with `task` plus `sources` (`repo://`, `image://`, `log://`, `jira://`, `confluence://`). Drill down with `local_expand`. Fine-grained tools (`local_search`, `local_image`, `local_fix`, …) remain for a single already-identified step. Do not delegate twenty lines already in Claude's context.
 
-Défaut mesuré pour `local_task` (DIRECT / REDUCE extract / tool call) : **`mlx-community/Qwen3.5-9B-MLX-4bit`** (~6 Go).
+## Routing tiers
 
-Banc historique sur les épreuves `local_search` (dérivation de motifs), à code identique :
+**DIRECT** runs deterministic tools only (`rg`, OCR, pixel compare, `fetch_issue`). `local_llm_calls` must stay 0.
 
-| Modèle                               | Exactitude | Banc de 15 tours | Observation                                        |
-| ------------------------------------ | ---------- | ---------------- | -------------------------------------------------- |
-| Qwen3.5-9B-MLX-4bit (6 Go)           | défaut `local_task` | ping 0,18 s | Premier `search_repo` en 1,9 s. REDUCE extract-only sans LLM. |
-| Qwen3.6-35B-A3B 4-bit (20 Go)        | 15/15 `local_search` | 43 s        | Plus rapide sur un gros digest LLM, prose log moins juste. |
-| Ornith-1.5-35B-A3B 4-bit (19,5 Go)   | 14/15      | 98 s             | Reasoning, plus lent, texte seul                   |
+**REDUCE** extracts high-signal excerpts first. If those excerpts already answer the mission, there is no local LLM call. High-signal evidence is kept lossless: the packet is not allowed to drop the planted cause.
 
-Un seul modèle chargé. Permuter : `POST /v1/unload-model` puis `POST /v1/load-model`.
-`local_ping` expose `vision: true` quand le modèle déclare `image` dans `input_modalities`.
+**AGENT** is a bounded local tool loop. Use it when the task is actually multi-source or multi-step. It is slower than DIRECT/REDUCE (measured 5.7 s vs tens of milliseconds).
 
-## Language
+**CLAUDE** is the high-risk exit: the router sets `needs_claude` and does not pretend to decide.
 
-MCP tool descriptions, report section titles (`Locations`, `Findings`, `Stats`) and savings footers
-are in English, so any orchestrator can read the schema. The local model writes findings in the
-**same language as the question or task**: a French query still gets a French answer. That behaviour
-is covered by the accuracy bench. Absence and sampling guards stay bilingual so existing French
-rules (`Ne pas conclure à l'absence`, `Réponse établie sur un échantillon`) keep matching.
+## Measured results
 
-## Emplacement et périmètre
+Numbers below come from [`BENCHMARKS.md`](BENCHMARKS.md) (2 September 2026, 9B alone). They are source-context interception, not Claude billing.
 
-Tout vit dans `~/.local-agent/`, hors des dépôts sur lesquels il travaille. La racine du dépôt à
-analyser est déduite du répertoire courant via `git rev-parse --show-toplevel`, l'outil fonctionne donc
-dans n'importe quel projet sans réglage, et `LOCAL_AGENT_REPO_ROOT` permet de la forcer.
+| Workload | Raw source | Claude-visible | Source interception | Local LLM | Latency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2.2 MB log | 560,953 tok | ~848–866 tok | 99.8% | 0 | 0.04 s |
+| 2 UI screenshots | 35,142 tok | 254 tok | 99.3% | 0 | n/a |
+| module lookup | 10,929 tok | 96 tok | 99.1% | 0 | n/a |
+| screenshot + repo AGENT | 9,563 tok | 1,832 tok | 80.8% | 3 calls | 5.7 s |
+| tiny 297 B fixture | 74 tok | 101 tok | 0% | 0 | 0.03 s |
 
-## Utilisation depuis Claude Code ou Cursor
+Source interception is not billed Claude token savings.
 
-`install.sh` fait l'enregistrement. Pour le faire à la main, déclarer le serveur dans `~/.claude.json`
-(Claude Code) ou `~/.cursor/mcp.json` (Cursor), clé `mcpServers.local-agent`, commande
-`~/.local-agent/bin/local-agent-mcp`. Deux subtilités :
+The 2.2 MB log kept `InvoiceService.getTotal` / null invoice in the packet, with 0 local LLM. The two screenshots kept `SHA256` and `pixel` in the packet; do not strip those labels to recover tokens. AGENT on the 9B found `DIV` / `HCP` on a recette pair (the previous 35B run was 13.6 s on the same kind of task).
 
-- **Cursor ne substitue pas** `${workspaceFolder}` : ne pas s'en servir. Pour viser un autre dépôt que
-  celui détecté, passer son chemin absolu dans le paramètre `repo` de l'outil appelé.
-- Les règles indiquant *quand* déléguer se placent dans la mémoire utilisateur du client
-  (`~/.claude/CLAUDE.md` pour Claude Code, User Rules pour Cursor), ou se laissent porter par les
-  descriptions des outils MCP qui contiennent déjà cette guidance.
+The tiny fixture is the honest miss: the packet is larger than the source. `rg` can stay smaller (51 tok). The measured win there is skipping a local LLM (6.9 s → 0.03 s), not compression.
 
-Redémarrer le client après toute modification de ces fichiers.
+## What the numbers mean
 
-| Outil MCP            | Rôle                                                        | Paramètres                                            |
-| -------------------- | ----------------------------------------------------------- | ----------------------------------------------------- |
-| `local_task`         | Mission + sources, boucle locale, paquet de preuves     | `task`, `sources`, `autonomy`, `output_budget`, `local_context_budget` |
-| `local_expand`       | Détail d'une preuve (`CODE-E12`, `E12`, `a832-R1`)      | `id` / `ids`                                            |
-| `local_metrics`      | Tableau de bord mesurable (pas de billed Claude)        | aucun                                                   |
-| `local_image_compare`| Diff de deux captures (hash + OCR + pixel)              | `reference`, `current`                                  |
-| `local_search`       | Localiser du code à partir d'une question                    | `query`, `path`, `globs`                               |
-| `local_analyze`      | Analyse libre, résumé de fichiers, détection de doublons      | `path`, `task`, `mode`, `globs`, `max_files`           |
-| `local_review`       | Première passe de revue de code                              | `path`, `task`, `globs`                                |
-| `local_fix`          | Modification mécanique, transactionnelle par défaut           | `path`, `task`, `mode`, `patch_id`, `globs`, `allow_dirty` |
-| `local_test_analysis`| Contrôle projet filtré et synthétisé                         | `kind`, `target`, `filter`                             |
-| `local_log_analysis` | Analyse de logs volumineux                                   | `path`, `task`, `patterns`                             |
-| `local_image`        | OCR puis, si le modèle chargé a la vision, passe layout | `path`, `paths`, `task`                                 |
-| `local_image_crop`   | Crop d'une région (`a832-R1`), sans la capture complète       | `id`                                                    |
-| `local_diff_review`  | Revue d'un diff git avec message de commit proposé            | `scope`, `base`, `task`                                |
-| `local_ping`         | Diagnostic : connexion, racine, contrôles disponibles, config | aucun                                                  |
+Three different quantities. Do not mix them.
 
-Tous les outils acceptent en plus un paramètre optionnel `repo`, chemin absolu du dépôt à analyser, qui
-prime sur la racine configurée. `local_ping` affiche la racine effective et signale explicitement une
-racine inutilisable.
+**A. Source interception** (measured per delegated file or pair):
 
-### Modification transactionnelle
+```text
+interception_rate =
+(raw estimated tokens of delegated source
+ - Claude-visible packet tokens)
+ / raw estimated tokens of delegated source
+```
 
-`local_fix` ne réécrit plus directement par défaut. `mode=propose` (défaut) génère les changements,
-renvoie le diff unifié et un `patch_id`, sans rien écrire : la proposition est figée sur disque avec le
-hash de chaque fichier source. `mode=apply` avec ce `patch_id` applique le contenu exact proposé, et
-refuse tout fichier modifié entre-temps (proposition à refaire sur la version courante). Un bundle
-appliqué est consommé, un bundle de plus de 7 jours est purgé. `mode=direct` garde l'ancien comportement
-pour les changements triviaux.
+Example: 2.2 MB log → 99.8% less of that source reached Claude. This is source-context interception. It is not Claude billing or subscription usage.
 
-### Observabilité
+**B. Session impact** (depends on how much of the conversation is interceptable). In a recipe/ticket-heavy workflow we observed, the realistic session-level opportunity is roughly 2–7% of context, depending on whether screenshots and logs stay outside Claude. This is not a billing measurement. Above ~10% generally requires a session dominated by a large log, dump, or similarly large delegated input.
 
-Chaque réponse MCP affiche quatre compteurs distincts :
+**C. Claude billing / subscription usage:** not measured. There is no supported public surface for Cursor/Claude Code bills. Prompt caching and compaction exist. Cursor jsonl stores tool calls, not tool results. Do not treat reconstructed `Read` sizes as money saved.
 
-1. **Raw context processed locally** : ce qui a été lu ici
-2. **Claude-visible context returned** : ce qui part dans le paquet
-3. **Direct context avoided** : la différence, one-shot
-4. **Context exposure avoided** : ce one-shot × `LOCAL_AGENT_COMPOUND_TURNS` (défaut 25)
+Optional "context exposure" (`one-shot × future turns`) is an estimate of later-turn exposure, not a bill. Detail: `BENCHMARKS.md`.
 
-Le quatrième est une estimation d'exposition dans les tours suivants, **pas du billed**. Cache et
-compaction du harness s'en mêlent. Mesuré : 14 339 one-shot → ~390 000 token-turns (~27×). Le même
-appel vaut plus en début de session qu'à la fin. Cumuls dans `~/.local-agent/usage-totals.json`.
+## When it helps
 
-### Captures d'écran
+- large logs and dumps
+- large test/check output
+- screenshots / UI recipes
+- unfamiliar repository exploration
+- multi-source investigations not yet loaded into Claude
+- Jira / Confluence pages whose body does not need to enter Claude verbatim
 
-`local_image` lit le fichier, rend le texte verbatim et des ids de régions. Un tableau (Excel,
-DataTable) est reconstruit en grille à partir des boîtes, sans modèle : les lettres de colonnes
-sont écartées, `#DIV/O!` redevient `#DIV/0!`. Si le modèle chargé a la vision **et** que la grille
-a un trou (en-tête vide, formulaire, tâche layout/filtre/bouton), le même checkpoint reçoit le
-**chemin fichier** (jamais de base64, bug connu Qwen3.x / mlx-vlm) et rend des notes UI. Les
-chiffres OCR restent la source de vérité. `local_image_crop` sort un PNG de la zone utile.
-`local_task` rend un paquet borné : STATUS, CONFIDENCE (HIGH/MEDIUM/LOW, heuristique), RISK,
-ROOT CAUSE, fichiers, emplacements, ids `CODE-E` / `IMG-E` / `LOG-E`. Drill-down : `local_expand`.
+## When it doesn't
 
-## Utilisation en ligne de commande
+- tiny files (packet can exceed the source)
+- already-known explicit symbols where plain `rg` is enough
+- content already present in the Claude conversation
+- architecture discussions
+- high-risk auth/security/API decisions
+- instructions Claude must follow verbatim
+
+If `rg` is enough, use `rg`. The router is built to know the difference: this helps a lot on some inputs and little on others.
+
+Name the symbol when you know it. An interrogative with no identifier on a large file is allowed to stay REDUCE. A fallback grep will not search `Where` / `What` / `Find` (those are stopwords). `Locate route_task and initial_action_hint` stays DIRECT.
+
+## Evidence / progressive disclosure
+
+Claude gets evidence IDs (`CODE-E12`, `LOG-E4`, `IMG-E2`, region ids like `a832b1c4-R1`) instead of every raw artifact. `local_expand` fetches the stored excerpt. Items carry provenance, hash, and stale detection. Image crops stay on disk until asked for. That is progressive disclosure, not a second copy of the file in the chat.
+
+## Jira / Confluence
+
+`jira://KEY` and `confluence://id` or `confluence://SPACE/Title` are DIRECT fetches: a short goal/title in the packet, body in the store, expand on demand. No extra semantic understanding is claimed.
+
+Credentials are not stored in this repository. They come from the **target repo's** `.claude/.env.local` (`JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`) or from the environment / `~/.local-agent/local-agent.env` (`JIRA_BASE_URL`, `JIRA_TOKEN`, `JIRA_EMAIL`). `jira://` with `repo` pointed at a checkout that has no credentials correctly returns "not configured". Tokens never appear in `doctor` or reports.
+
+## Model
+
+Recommended default: **`mlx-community/Qwen3.5-9B-MLX-4bit`** (~6 GB, text + vision). Keep one model loaded. The 35B is not required for normal use; it remains a historical comparison in `BENCHMARKS.md`.
+
+On the measured harness the 9B is much lighter, the first tool-use is faster, and extract-only REDUCE no longer needs a local LLM when high-signal excerpts exist. That is not a claim that the 9B is universally better.
+
+Images: OCR and deterministic compare (hash, pixel grid) first. Optional local vision only when the grid has a hole. Most measured image gains come from that deterministic reduction, not from a VLM caption.
+
+## Configuration
+
+Root of the **client** repository, not this tool's checkout:
+
+- default: `git rev-parse --show-toplevel` from the working directory
+- override: `LOCAL_AGENT_REPO_ROOT=/path/to/client/repo`
+- per call: MCP argument `repo` (absolute path). Cursor does not expand `${workspaceFolder}`.
+
+To work on local-agent itself, point `repo` or `LOCAL_AGENT_REPO_ROOT` at this checkout.
+
+Copy `local-agent.env.example` to `~/.local-agent/local-agent.env` (gitignored). Real environment variables win over the file. `MLX_*` names still work if `LOCAL_LLM_*` is unset.
+
+| Variable | Default | Role |
+| --- | --- | --- |
+| `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:11234/v1` | OpenAI-compatible endpoint |
+| `LOCAL_LLM_MODEL` | `auto` | `auto` = already loaded model |
+| `LOCAL_AGENT_REPO_ROOT` | current git root | Target repository |
+| `LOCAL_AGENT_DIRECT_CONTEXT_THRESHOLD` | `2000` | Below this, DIRECT forbids a local LLM |
+| `LOCAL_AGENT_COMPOUND_TURNS` | `25` | Exposure estimate factor; `0` disables. Not billing. |
+
+Full list: `local-agent.env.example` and `local-agent config`.
+
+## Safety
+
+Paths resolve inside the repository root (images may be absolute files, still refuse secrets and >8 MB). `.git`, `node_modules`, `vendor`, `var`, dumps, and `*.env` / `*.pem` / `*secret*` are denied unless the path names that directory explicitly. Writes default to propose-then-apply with source hashes. No `git reset`, `git add`, or `git commit`. Project checks are a whitelist (`.local-agent.json` or a language preset). Output is clamped.
+
+## CLI
 
 ```bash
 ~/.local-agent/bin/local-agent ping
 ~/.local-agent/bin/local-agent doctor
-~/.local-agent/bin/local-agent stats
-~/.local-agent/bin/local-agent config
-
-~/.local-agent/bin/local-agent task "Where is the evidence Store class?" --source repo://local_agent
-~/.local-agent/bin/local-agent expand CODE-E1
-~/.local-agent/bin/local-agent session --new
-~/.local-agent/bin/local-agent image-compare avant.png apres.png
-
-~/.local-agent/bin/local-agent search "où est implémentée l'authentification ?" --path src
-~/.local-agent/bin/local-agent review src/Api/Service
-~/.local-agent/bin/local-agent summarize src/Workflow --glob '*.php'
-~/.local-agent/bin/local-agent duplicates src/Services/ContratTravail --glob '*.php'
-~/.local-agent/bin/local-agent inspect src/Admin --task "liste les DataTable sans filtre de structure"
-
-~/.local-agent/bin/local-agent logs var/log/symfony.log
-~/.local-agent/bin/local-agent logs var/log --pattern 'CRITICAL' --pattern 'Uncaught'
-
-# fix propose par défaut : diff + patch_id, rien n'est écrit
-~/.local-agent/bin/local-agent fix src/Model --task "ajoute les docblocks @return manquants"
-~/.local-agent/bin/local-agent apply a1b2c3d4e5f6   # applique la proposition exacte
-~/.local-agent/bin/local-agent fix src/Model --task "..." --mode direct   # écriture immédiate
-
-~/.local-agent/bin/local-agent check                 # premier contrôle disponible
-~/.local-agent/bin/local-agent check phpstan --target src/Api
-~/.local-agent/bin/local-agent check pytest --target tests
-
-~/.local-agent/bin/local-agent diff              # tout le non committé (worktree)
-~/.local-agent/bin/local-agent diff staged
-~/.local-agent/bin/local-agent diff branch --base main
-
-~/.local-agent/bin/local-agent image ~/Desktop/capture.png
-~/.local-agent/bin/local-agent image ecran1.png ecran2.png ecran3.png --task "erreur"
-~/.local-agent/bin/local-agent image-crop a832b1c4-R1
+~/.local-agent/bin/local-agent task "Find the root cause." --source log://var/bench.log
+~/.local-agent/bin/local-agent task "Locate route_task and initial_action_hint" --source repo://local_agent/router.py
+~/.local-agent/bin/local-agent expand LOG-E1
+~/.local-agent/bin/local-agent image-compare before.png after.png
 ```
 
-`--json` remplace le rendu markdown par le rapport JSON brut.
+`--json` prints the raw report.
 
-## Configuration
+## MCP tools
 
-Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env` (copier
-`local-agent.env.example`, ignoré par git). L'environnement réel a toujours priorité sur le fichier.
+`local_task`, `local_expand`, `local_metrics`, `local_image_compare`, `local_search`, `local_analyze`, `local_review`, `local_fix`, `local_test_analysis`, `local_log_analysis`, `local_image`, `local_image_crop`, `local_diff_review`, `local_ping`. Every tool accepts optional `repo`. `local_ping` shows the effective root and `server.git_head`.
 
-| Variable                        | Défaut                       | Rôle                                                        |
-| ------------------------------- | ---------------------------- | ----------------------------------------------------------- |
-| `LOCAL_LLM_BASE_URL`            | `http://127.0.0.1:11234/v1`  | Racine de l'API compatible OpenAI                            |
-| `LOCAL_LLM_MODEL`               | `auto`                       | `auto` prend le modèle déjà chargé                           |
-| `LOCAL_LLM_API_KEY`             | vide                         | Jeton Bearer, uniquement si le serveur en exige un           |
-| `LOCAL_LLM_TEMPERATURE`         | `0`                          | Température des requêtes                                     |
-| `LOCAL_LLM_TIMEOUT`             | `300`                        | Timeout HTTP par requête, en secondes                        |
-| `LOCAL_LLM_MAX_TOKENS`          | `1600`                       | Plafond de génération par requête                            |
-| `LOCAL_AGENT_MAX_FILES`         | `40`                         | Fichiers analysés au maximum par appel                       |
-| `LOCAL_AGENT_MAX_FILE_SIZE`     | `120000`                     | Octets lus au maximum par fichier                            |
-| `LOCAL_AGENT_MAX_OUTPUT_TOKENS` | `900`                        | Plafond du rapport renvoyé à l'orchestrateur                 |
-| `LOCAL_AGENT_CHUNK_CHARS`       | `12000`                      | Taille d'un lot envoyé au modèle local, premier levier de latence |
-| `LOCAL_AGENT_MAX_CHUNKS`        | `8`                          | Lots au maximum par appel                                    |
-| `LOCAL_AGENT_MAX_MATCHES`       | `200`                        | Correspondances ripgrep conservées                           |
-| `LOCAL_AGENT_FIX_MAX_FILE_SIZE` | `40000`                      | Au-delà, un fichier n'est pas réécrit                        |
-| `LOCAL_AGENT_COMMAND_TIMEOUT`   | `900`                        | Timeout des contrôles projet                                 |
-| `LOCAL_AGENT_COMPOUND_TURNS`    | `25`                         | Facteur de tours pour l'estime d'exposition (pas du billed). `0` la désactive |
-| `LOCAL_AGENT_LOCAL_CONTEXT_BUDGET` | `48000` | Taille max du contexte de la boucle d'outils |
-| `LOCAL_AGENT_DIRECT_CONTEXT_THRESHOLD` | `2000` | Tokens of raw source below which DIRECT forbids a local LLM |
-| `LOCAL_AGENT_FORCE_TIER` | (empty) | Test hook: `direct`, `reduce`, `agent`, `claude` |
-| `LOCAL_AGENT_REPO_ROOT`         | racine du dépôt              | Surcharge de la racine, utile pour les tests                  |
+## Benchmarks
 
-Les anciens noms `MLX_*` restent lus en rétrocompatibilité quand la variante `LOCAL_LLM_*` est absente.
-
-Jira : `local_task` avec `jira://LYSI-1234` lit le ticket (DIRECT, `fetch_issue`, zéro LLM local).
-Confluence Cloud : `confluence://123456` ou `confluence://SPACE/Title` (DIRECT, `fetch_page`, même
-jeton Atlassian). Les identifiants ne sont pas dans local-agent. Ils viennent du
-`.claude/.env.local` du dépôt visé (`JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`, le format déjà
-utilisé par les skills lysi), ou de `JIRA_BASE_URL` / `JIRA_TOKEN` / `JIRA_EMAIL` dans
-l'environnement. Le jeton ne figure pas dans `doctor` ni dans les rapports.
-
-## Contrôles projet par dépôt
-
-`local_test_analysis` exécute les contrôles déclarés par le dépôt. Sans déclaration, un preset est
-choisi selon le langage : Symfony (`phpstan`, `phpunit`, `cs-fixer`, `twig`, `yaml`, `eslint`, via
-`docker compose exec`), Node (`test`, `lint`, `types`) ou Python (`pytest`, `ruff`, `mypy`). Pour
-déclarer les siens, créer `.local-agent.json` à la racine du dépôt :
-
-```json
-{
-  "checks": {
-    "test": {"command": "npm test", "label": "Tests"},
-    "types": {"command": ["npx", "tsc", "--noEmit"]},
-    "lint": {"command": "npm run lint", "accepts_target": true}
-  }
-}
-```
-
-Ce fichier est une liste blanche : seules ces commandes déclarées sont exécutables, et `local_ping`
-liste celles qui sont disponibles.
-
-## Garde-fous
-
-- **Confinement** : tout chemin est résolu et refusé s'il sort de la racine du dépôt. Exception :
-  `local_image` accepte un fichier image absolu hors git (captures), refuse les secrets, `.ssh` et
-  les fichiers de plus de 8 Mo.
-- **Exclusions** : `.git`, `node_modules`, `vendor`, `var`, `temp`, `_db`, builds, caches, fichiers
-  binaires. Un répertoire normalement exclu redevient lisible quand le chemin le désigne explicitement,
-  ce qui permet d'analyser `var/log` sans ouvrir le reste de `var`.
-- **`.gitignore`** : respecté par défaut, contourné seulement pour une cible explicitement ignorée.
-- **Secrets** : `.env*`, `*.pem`, `*.key`, clés privées, `*credential*`, `*secret*`, dumps et sauvegardes
-  ne sont jamais lus.
-- **Écritures** : transactionnelles par défaut (proposition relue puis application exacte vérifiée par
-  hash). Un fichier modifié mais non committé, ou non suivi par git, n'est jamais réécrit sans
-  `allow_dirty`. Aucune commande destructrice n'est accessible, aucun `git reset`, aucune suppression de
-  branche, aucun `git add` ni `git commit`.
-- **Validation d'écriture** : écriture atomique, puis contrôle syntaxique quand disponible. Toute
-  réécriture vide, identique, amputée de plus de moitié, plus que doublée ou ayant perdu son `<?php` est
-  annulée et le contenu d'origine restauré.
-- **Commandes** : seuls les contrôles en lecture déclarés par le preset ou `.local-agent.json` sont
-  exposés. Le fichier est une liste blanche, pas un shell : aucune autre commande n'est atteignable.
-- **Sortie bornée** : la lecture de la sortie de `rg` est plafonnée, et le rapport final est tronqué à
-  `LOCAL_AGENT_MAX_OUTPUT_TOKENS`.
-
-## Fonctionnement interne
-
-```
-local_agent/
-├── config.py    variables d'environnement et bornes
-├── mlx.py       client HTTP compatible OpenAI, résolution du modèle, nettoyage des blocs de raisonnement
-├── files.py     découverte ripgrep, garde-fous, lecture bornée, découpage en lots
-├── shell.py     exécution de commandes en liste blanche, état du working tree
-├── prompts.py   consignes, contrats de sortie, extraction JSON tolérante aux troncatures
-├── tasks.py     search, analyze, logs, check, diff_review
-├── grid.py      reconstruction de tableau depuis les boîtes OCR, sans LLM
-├── evidence.py  cache des paquets de preuves (ids, expiration 7 jours)
-├── ocr.py       OCR et crop d'une capture (Vision / Tesseract)
-├── vision.py    seconde passe layout si le modèle chargé a `vision`
-├── ocr_vision.swift  binaire Vision compilé à la demande dans var/local-ocr
-├── edit.py      propositions transactionnelles et réécriture sous contrôle git
-├── report.py    rapport compact et clamp de sortie
-├── agent.py     boucle local_task, budgets, détection de boucle, escalation
-├── agent_tools.py  outils déterministes du modèle local (rg, git, checks, OCR)
-├── store.py     SQLite : preuves, cache SHA256, métriques
-├── gateway.py   parse repo:// image:// jira:// …
-├── risk.py      autonomie et heuristique d'escalade
-├── compare.py   diff de captures (hash + OCR + pixel)
-├── doctor.py    diagnostic runtime
-├── providers/   jira/confluence (`.claude/.env.local` du dépôt visé), rules, data
-├── cli.py       interface en ligne de commande
-└── mcp.py       serveur MCP stdio (JSON-RPC 2.0, sans dépendance)
-```
-
-`search` procède en trois temps : le modèle local dérive des expressions ripgrep depuis la question,
-`rg` exécute la recherche, puis le modèle ne raisonne que sur les correspondances et de courtes fenêtres
-de code autour des fichiers les plus denses. `analyze` fait un map par lot suivi d'une réduction.
-`logs` regroupe les lignes par signature normalisée et ne soumet que les signatures dominantes.
-
-## Sonde de bon fonctionnement
+Measured runs, definitions, and limitations: [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ```bash
-python3 ~/.local-agent/tests/run_all.py               # tous les tests/test_*.py
-python3 ~/.local-agent/tests/mcp_probe.py          # 7 appels réels, ~30 s
-python3 ~/.local-agent/tests/mcp_probe.py --quick  # ping et recherche uniquement
+python3 ~/.local-agent/tests/run_all.py
+~/.local-agent/bin/local-agent benchmark all
 ```
 
-La sonde lance le serveur en stdio, joue une série d'appels, vérifie que le confinement des chemins est
-appliqué et qu'aucune réponse ne dépasse 4 000 caractères. Code de sortie non nul en cas d'échec.
+## Limitations
 
-## Bancs de mesure
+- A local LLM call still costs seconds; AGENT is for background-ish work, not a chat ping-pong.
+- No identifier in the mission plus a large file can stay REDUCE. Name the symbol when you know it.
+- Claude billed tokens are not captured.
+- Live `autonomy=patch` against mlx-serve is scripted in tests, not a live sandbox in this harness.
+- `local_fix` rewrites whole files; keep it mechanical and under `LOCAL_AGENT_FIX_MAX_FILE_SIZE`.
 
-```bash
-~/.local-agent/bin/local-agent ping                   # mlx + server.git_head (CLI, pas le MCP Cursor)
-~/.local-agent/bin/local-agent benchmark all          # PROVE IT harness, writes var/last-benchmark.json
-~/.local-agent/bin/local-agent benchmark live         # Jira + Confluence HTTP if credentials exist
-~/.local-agent/bin/local-agent benchmark logs
-~/.local-agent/bin/local-agent benchmark all --no-llm # baselines + deterministic tools only
-python3 ~/.local-agent/tests/bench.py                 # older per-tool volume bench
-python3 ~/.local-agent/tests/bench_exactitude.py --tours 3
-```
+## Development
 
-Les cas vivent dans `tests/cases.json` et visent ce dépôt même, sans dépendance à un projet
-particulier. Pour mesurer sur un dépôt de travail réel, copier ce fichier en `tests/cases.local.json`
-(ignoré par git), l'adapter, puis :
-
-```bash
-LOCAL_AGENT_BENCH_REPO=/chemin/du/depot python3 tests/bench.py --cases tests/cases.local.json
-```
-
-Le banc d'exactitude note par mots clés, ce qui est un proxy : il attrape les échecs francs, pas les
-nuances. Ses `interdits` doivent rester des formulations sans équivoque, une phrase trop générale
-produisant de faux négatifs.
-
-### Latence
-
-```bash
-python3 ~/.local-agent/tests/bench_latence.py --tours 3
-```
-
-Un appel qui atteint le modèle coûte 4 à 10 secondes sur un 35B quantifié ; un appel tranché par
-l'arbitrage de frugalité coûte moins d'une seconde. La décomposition par phase montre où passe le temps :
-
-| Phase | Part |
-|---|---|
-| Synthèse par le modèle | 87 % |
-| Dérivation des motifs | 12 % |
-| ripgrep et extraction des fenêtres | moins de 1 % |
-
-Le travail sur disque est donc gratuit, et **le coût suit la taille de l'entrée, pas celle de la
-sortie** : abréger le rapport ne gagne que 0,5 s, tandis que passer le budget d'extraits de 48 000 à
-12 000 caractères fait tomber la synthèse de 8,3 s à 6,6 s. C'est le réglage à toucher en premier,
-`LOCAL_AGENT_CHUNK_CHARS`, en gardant à l'esprit qu'un budget trop étroit finit par priver le modèle du
-contexte qui porte la réponse.
-
-Attention en mesurant : `mlx-serve` garde un cache de prompt, donc rejouer deux fois la même requête
-donne un temps trompeusement bas. Ne comparer que des requêtes distinctes.
-
-## Limites connues
-
-- Un appel qui atteint le modèle coûte 5 à 10 secondes, une analyse au plafond des 8 lots environ une
-  minute : c'est un outil de tâches de fond, pas d'allers-retours interactifs.
-- **La recherche dépend du pont lexical entre la question et les identifiants du code.** Plusieurs
-  mécanismes le construisent (traduction des notions, adaptation au langage dominant du dépôt, radicaux
-  des identifiants proposés, seconde dérivation quand la moisson est maigre), mais une question purement
-  descriptive sans aucun terme du code peut encore échouer. Nommer le symbole quand on le connaît, ou
-  resserrer le `path` et les `globs`.
-- `local_fix` fait réécrire le fichier entier par le modèle, même en mode transactionnel : réservé aux
-  fichiers de moins de 40 000 caractères et aux consignes réellement mécaniques.
-- Le contrôle syntaxique après écriture n'existe que pour PHP (`php -l`, qui suppose Docker démarré sur
-  le preset Symfony). Pour les autres langages, seule la vraisemblance du contenu est vérifiée.
+Layout: `local_agent/` (router, agent loop, MCP, store, providers). Tests: `python3 tests/run_all.py`. After MCP code changes, restart the client and compare `local_ping.server.git_head` to `./bin/local-agent ping`.
