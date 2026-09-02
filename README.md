@@ -37,11 +37,11 @@ Le banc **DIRECT → REDUCE → AGENT** (2 septembre 2026, 9B seul) est dans [`B
 
 | Scenario | Direct avoided | Interception | Correct | Latency |
 | --- | ---: | ---: | --- | ---: |
-| 2.2 MB log, tier REDUCE, extract only | 560 087 tok | 99.8% | yes | 0.04 s |
+| 2.2 MB log, tier REDUCE, extract only | 560 105 tok | 99.8% | yes | 0.04 s |
 | Tiny 297 B repo, tier DIRECT | 0 (packet 101 tok > 74) | 0% | yes | 0.03 s |
-| Recette LYSI-5177, 2 annexes PNG | 34 631 tok | 98.5% | yes (`pixel`, `SHA256`) | 0.7 s |
+| Recette LYSI-5177, 2 annexes PNG | 34 479 tok | 98.1% | yes (`pixel`, `SHA256`) | 0.8 s |
 | Recette 5662 screenshots + repo, AGENT 9B | 7 731 tok | 80.8% | yes (`DIV`, `HCP`) | 5.7 s |
-| Module `route_task`, DIRECT | 10 618 tok | 98.1% | yes | 0.03 s |
+| Module `route_task`, DIRECT | 10 833 tok | 99.1% | yes | 0.03 s |
 
 Verdict: **niche but useful**. DIRECT and extract-only REDUCE are the value. The 9B is the default local model. A 35B loop is not the product.
 

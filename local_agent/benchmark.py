@@ -370,7 +370,7 @@ CASES = {
 }
 
 
-def run(config: Config, client: MlxClient, kind: str = "all", *, no_llm: bool = False, eval_only: bool = False) -> dict:
+def run(config: Config, client: MlxClient, kind: str = "all", *, no_llm: bool = False, eval_only: bool = False, target: str | None = None) -> dict:
     if kind == "sessions":
         from . import replay as replay_mod
 
@@ -378,6 +378,23 @@ def run(config: Config, client: MlxClient, kind: str = "all", *, no_llm: bool = 
         (ROOT / "var").mkdir(parents=True, exist_ok=True)
         (ROOT / "var" / "last-replay.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
+    if kind == "transcript":
+        from .transcript import classify_jsonl
+
+        if not target:
+            raise ValueError("benchmark transcript needs a jsonl path")
+        return classify_jsonl(Path(target))
+    if kind == "day":
+        from .transcript import classify_day
+
+        if not target:
+            raise ValueError("benchmark day needs a transcript folder")
+        return classify_day(Path(target))
+    candidate = Path(kind).expanduser()
+    if candidate.suffix == ".jsonl" and candidate.is_file():
+        from .transcript import classify_jsonl
+
+        return classify_jsonl(candidate)
     selected = list(CASES) if kind in {"all", "", None} else [kind]
     unknown = [item for item in selected if item not in CASES]
     if unknown:

@@ -97,7 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     session.add_argument("--new", action="store_true", help="force a new session id")
 
     bench = subparsers.add_parser("benchmark", help="mesure contexte, latence et justesse sur des taches reelles")
-    bench.add_argument("kind", nargs="?", default="all", help="repo, logs, vision, patch, jira, tests, cache, sessions, all")
+    bench.add_argument("kind", nargs="?", default="all", help="repo, logs, vision, patch, jira, tests, cache, sessions, transcript, day, all")
+    bench.add_argument("target", nargs="?", default=None, help="jsonl path (transcript) or folder (day)")
     bench.add_argument("--no-llm", action="store_true", help="baselines only, skip local_task")
 
     eval_parser = subparsers.add_parser("eval", help="note la justesse des taches du banc (meme manifest)")
@@ -197,7 +198,13 @@ def _dispatch(arguments: argparse.Namespace, config, client: MlxClient) -> Repor
     if command == "benchmark":
         from . import benchmark as bench_mod
 
-        return bench_mod.run(config, client, arguments.kind, no_llm=bool(arguments.no_llm))
+        return bench_mod.run(
+            config,
+            client,
+            arguments.kind,
+            no_llm=bool(arguments.no_llm),
+            target=getattr(arguments, "target", None),
+        )
     if command == "eval":
         from . import benchmark as bench_mod
 

@@ -95,16 +95,25 @@ Reconstructed from artifacts still on disk, 2 September 2026, 9B loaded but **0 
 
 | Session | Type | Raw external context | Claude-visible | Direct avoided | Quality |
 | ------- | ---- | -------------------: | -------------: | -------------: | ------- |
-| A Recette UI LYSI-5177 (2 annexes PNG, transcript a64d3fc5) | DIRECT | 35 142 tok | 511 tok | 34 631 | 4 (`pixel`, `SHA256`) |
-| B Module lookup `route_task` (transcript a8ca4c10, two source files as proxy) | DIRECT | 10 820 tok | 202 tok | 10 618 | 4 |
-| C Log incident (2.2 MB fixture, extract-only REDUCE) | REDUCE | 560 953 tok | 866 tok | 560 087 | 4 |
+| A Recette UI LYSI-5177 (2 annexes PNG, transcript a64d3fc5) | DIRECT | 35 142 tok | 663 tok | 34 479 | 4 (`pixel`, `SHA256`) |
+| B Module lookup `route_task` (transcript a8ca4c10, two source files as proxy) | DIRECT | 10 929 tok | 96 tok | 10 833 | 4 |
+| C Log incident (2.2 MB fixture, extract-only REDUCE) | REDUCE | 560 953 tok | 848 tok | 560 105 | 4 |
 
-First session A run scored 0: DIRECT stored OCR `score=0.265…` and dropped the compare findings. After putting SHA256/pixel labels in the packet: quality 4, visible 437 → 511 tok, interception 98.5%.
+First session A run scored 0: DIRECT stored OCR `score=0.265…` and dropped the compare findings. Labels restored: quality 4. After the wrapper slim, the compare packet is 663 tok because findings stay (they were previously wiped when locations were empty). Session B slim: 202 → 96 tok.
 
-A full 18 M token recette day was **not** replayed. Session B uses the two files the lookup needs, not the 2.5 MB jsonl. Do not scale these rows into a billed-session percentage.
+## Cursor jsonl (not billed)
 
-Must remain Claude-visible: RECETTE.md / Jira already opened, architecture talk, this chat's instructions, expand on demand.
-Non interceptable: the jsonl already in the thread, Claude's own reasoning.
+Streamed 56 transcripts under the lysi Cursor `agent-transcripts` folder, 2 September 2026. Cursor jsonl stores **tool calls, not tool results**. File bodies billed at the time are missing. `eligible_read` reconstructs `Read` paths still on disk (limit × 200 chars, else file size).
+
+| Scope | jsonl | Already in jsonl | Reconstructed Read | Reads / missing | Grep calls |
+| ----- | ---: | ---------------: | -----------------: | --------------- | ---------: |
+| This chat a8ca4c10 (2.6 MB, 1518 lines) | 2 613 055 B | 628 991 tok | 157 357 tok | 83 / 7 | 218 |
+| Recette UI a64d3fc5 (1.1 MB, 640 lines) | 1 115 188 B | 268 721 tok | 575 671 tok | 134 / 69 | 420 |
+| Folder (56 jsonl) | 7 901 707 B (~1.98 M tok) | 1 873 567 tok | 3 452 388 tok | 829 / 194 | 1 530 |
+
+A billed 18 M token Claude day was **not** observed. The folder total is an on-disk jsonl census, not the API bill. Do not treat `eligible_read` as money saved: those bytes were not in the jsonl, and we do not know how much of each file Claude actually received.
+
+Command: `local-agent --json benchmark transcript <file.jsonl>` / `local-agent --json benchmark day <folder>`.
 
 ## Context interception rate
 
@@ -136,7 +145,7 @@ Not captured.
 - Live Jira fetch inside this harness.
 - Live `autonomy=patch` against mlx-serve (scripted in `tests/test_patch_workflow.py`).
 - Sequential small-model vs 35B: **done** (9B alone), including recette AGENT vision.
-- Full 18 M Claude recette session replay (still missing as a billed day).
+- Full 18 M Claude recette session as **billed** tokens (jsonl classifier exists; the API bill does not).
 - Houtini / delegate-local install.
 
 ## Product verdict (from these runs)
@@ -151,8 +160,8 @@ Default local model: **Qwen3.5-9B-MLX-4bit**.
 
 ## Next five priorities
 
-1. Replay a billed Claude Code day (eligible vs already-in-thread vs expand), not only on-disk artifacts.
-2. DIRECT packet is 101 tok vs 74 raw (`rg` 51). Further cuts would drop STATUS/heuristic or the hit line.
-3. Restart MCP clients on schema 1.3.0 (`local_task` routing description).
-4. Keep pixel/SHA256 labels in the compare packet (511 tok). Do not strip them to recover the old 437.
-5. Live Jira fetch inside the harness (still a fixture).
+1. Capture billed Claude tokens (usage API or export), not only jsonl on disk.
+2. Restart MCP clients on schema 1.3.0 (`local_task` routing description).
+3. Keep pixel/SHA256 labels in the compare packet. Session A is 663 tok with findings; do not strip them.
+4. Live Jira fetch inside the harness (still a fixture).
+5. DIRECT 101 tok vs 74 raw (`rg` 51). Further cuts drop STATUS or the hit line.
