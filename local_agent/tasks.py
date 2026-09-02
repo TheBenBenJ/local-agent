@@ -162,6 +162,43 @@ def _verify_paths(report: Report, known: set[str], config: Config) -> Report:
     return report
 
 
+# Conclure à l'absence alors que des emplacements sont listés : observé sur « existe-t-il un
+# mécanisme de forçage ? », le résumé niait la saisie manuelle puis listait les NumberType posés.
+_ABSENCE = re.compile(
+    r"(?i)("
+    r"\baucun(?:e|es)?\b"
+    r"|\bn['’](?:existe|existent|y a)\s+pas\b"
+    r"|\bn['’]existe\s+en dehors\b"
+    r"|\bne\s+(?:propose|proposent|contient|contiennent|permet|permettent|"
+    r"gère|gèrent|offre|offrent)\s+pas\b"
+    r"|\bpas de saisie\b"
+    r"|\bno (?:mechanism|manual|such)\b"
+    r")"
+)
+
+
+def _claims_absence(text: str) -> bool:
+    return bool(text and _ABSENCE.search(text))
+
+
+def _reconcile_absence(report: Report) -> Report:
+    """La section Emplacements prime : une conclusion d'absence n'est recevable que si elle est vide."""
+    if not report.locations:
+        return report
+    accused = [report.summary, *report.findings]
+    if not any(_claims_absence(text) for text in accused):
+        return report
+    notice = (
+        f"Ne pas conclure à l'absence : {len(report.locations)} emplacement(s) listé(s). "
+        "La section Emplacements prime sur le résumé."
+    )
+    if not report.summary.startswith("Ne pas conclure à l'absence"):
+        report.summary = f"{notice} {report.summary}".strip()
+    if notice not in report.risks:
+        report.risks.insert(0, notice)
+    return report
+
+
 def _flag_partial_sample(report: Report, omissions: list[str]) -> Report:
     """Dit en clair que la réponse porte sur un échantillon.
 
@@ -576,7 +613,9 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
         f"Correspondances brutes :\n{match_lines}\n\n"
         f"Extraits de code autour des correspondances :\n{snippets}\n\n"
         "Réponds à la question en t'appuyant uniquement sur ces éléments. Distingue le point d'entrée principal "
-        "des occurrences secondaires.\n" + enumeration_hint + "\n" + prompts.JSON_CONTRACT
+        "des occurrences secondaires. Locations d'abord ; pas d'absence si elles ne sont pas vides. "
+        f"Seul effectif autorisé : {total} correspondance(s) dans {len(counts)} fichier(s), sinon « au moins N dans l'échantillon ».\n"
+        + enumeration_hint + "\n" + prompts.JSON_CONTRACT
     )
     payload = _ask(client, prompts.SYSTEM_ANALYST, prompt, temperature=0.0)
     report = _payload_to_report(
@@ -590,7 +629,7 @@ def search(config: Config, client: MlxClient, query: str, path: str | None = Non
             "source_caracteres": len(match_lines) + len(snippets),
         },
     )
-    report = _verify_paths(report, set(counts), config)
+    report = _reconcile_absence(_verify_paths(report, set(counts), config))
     return _flag_partial_sample(
         report,
         [f"{len(matches)} correspondances examinées sur {total}" if len(matches) < total else ""]
@@ -689,7 +728,7 @@ def analyze(
         report.next_actions.append(
             f"{total - len(files)} fichiers non analysés (limite de {max_files or config.max_files} fichiers par appel)"
         )
-    report = _verify_paths(report, {item.relative for item in files}, config)
+    report = _reconcile_absence(_verify_paths(report, {item.relative for item in files}, config))
     return _flag_partial_sample(
         report,
         [
@@ -767,7 +806,7 @@ def analyze_logs(
             "source_caracteres": sum(len(match["text"]) for match in matches),
         },
     )
-    report = _verify_paths(report, {match["file"] for match in matches}, config)
+    report = _reconcile_absence(_verify_paths(report, {match["file"] for match in matches}, config))
     return _flag_partial_sample(
         report,
         [
@@ -979,7 +1018,7 @@ def diff_review(
         payload,
         stats={"files": len(sections), "files_reviewed": len(packed), "source_caracteres": len(diff)},
     )
-    report = _verify_paths(report, {name for name, _ in sections}, config)
+    report = _reconcile_absence(_verify_paths(report, {name for name, _ in sections}, config))
     return _flag_partial_sample(
         report,
         [f"{len(omitted)} fichiers non examinés faute de place : {', '.join(omitted[:5])}" if omitted else ""]

@@ -8,11 +8,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from local_agent.report import Report  # noqa: E402
 from local_agent.tasks import (  # noqa: E402
+    _NAMED_TYPE_DECL,
+    _claims_absence,
     _is_enumeration,
     _is_usage_query,
+    _reconcile_absence,
     _salient_terms,
-    _NAMED_TYPE_DECL,
 )
 
 
@@ -37,6 +40,31 @@ def main() -> None:
     check("filtre déclaration class Foo", bool(_NAMED_TYPE_DECL.search(r"class PaieService")))
     check("filtre ignore un identifiant nu", not _NAMED_TYPE_DECL.search("PaieService"))
     print("tous les contrôles d'intent passent")
+
+    absence = (
+        "Aucun mécanisme de forçage manuel des heures n'existe en dehors de PaieService. "
+        "Le pavé de qualification ne propose pas de saisie manuelle de ces volumes horaires."
+    )
+    check("détecte « aucun » + « n'existe »", _claims_absence(absence))
+    check("détecte « ne propose pas »", _claims_absence("Le formulaire ne propose pas de saisie manuelle."))
+    check("ne flag pas un constat positif", not _claims_absence("Le forçage passe par NumberType sur heures10Pourcent."))
+
+    flagged = _reconcile_absence(Report(
+        title="Recherche locale",
+        summary=absence,
+        locations=["src/Form/FichePaieType.php:40 - NumberType heures10Pourcent"],
+    ))
+    check("préfixe le résumé si emplacements non vides", flagged.summary.startswith("Ne pas conclure à l'absence"))
+    check("ajoute un risque", bool(flagged.risks))
+
+    untouched = _reconcile_absence(Report(
+        title="Recherche locale",
+        summary=absence,
+        locations=[],
+    ))
+    check("laisse l'absence si aucun emplacement", untouched.summary == absence)
+
+    print("tous les contrôles d'absence passent")
 
 
 if __name__ == "__main__":

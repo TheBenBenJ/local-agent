@@ -10,6 +10,7 @@ SYSTEM_ANALYST = (
     "Le dépôt est une application Symfony 7 / PHP 8.3 avec du TypeScript et du Twig, le vocabulaire métier est français. "
     "Tu réponds en français, de façon dense et factuelle, sans reformuler la consigne et sans recopier le code fourni. "
     "Tu ne renvoies jamais de longs extraits : uniquement des conclusions, des chemins de fichiers et des numéros de ligne. "
+    "Emplacements d'abord, puis conclusion. Pas d'absence si tu as des emplacements à citer. Pas d'effectif inventé. "
     "Tu respectes strictement le format de sortie demandé, sans texte avant ni après."
 )
 
@@ -31,7 +32,8 @@ JSON_CONTRACT = """Réponds uniquement par un objet JSON valide, sans bloc de co
   "next_actions": ["action recommandee", "..."]
 }
 Listes vides autorisées. Maximum 8 entrées par liste, 140 caractères par entrée. Aucune clé supplémentaire.
-Désigne les classes par leur nom court (AvenantStrategy), jamais par leur namespace complet."""
+Désigne les classes par leur nom court (AvenantStrategy), jamais par leur namespace complet.
+Ne conclus à l'absence que si locations est vide. Les listes sont un échantillon, pas un recensement."""
 
 FILE_ENVELOPE_CONTRACT = """Réponds exactement dans ce format, sans rien d'autre :
 CHANGED: yes ou no
