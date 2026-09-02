@@ -2,21 +2,25 @@
 
 **Keep code, screenshots, logs and data local. Claude gets an evidence packet, not the raw document.**
 
+1. Claude keeps the hard reasoning.
+2. local-agent acquires and reduces large context locally.
+3. Claude receives evidence, not raw context.
+
 Couche locale de réduction de contexte pour un agent de code (Claude Code, Cursor, tout client MCP).
 L'orchestrateur envoie une intention et un chemin. Le brut reste sur la machine : `ripgrep`, git, OCR
 Apple Vision, agrégats, et le modèle local déjà chargé. Claude reçoit un paquet de preuves (500 à
 3 000 tokens) avec des ids pour demander le détail.
 
-Un seul checkpoint côté mlx-serve : `mlx-community/Qwen3.6-35B-A3B-4bit` (MoE ~20 Go, **texte +
-vision**). Code, logs et captures passent par les mêmes poids. Les captures : OCR Vision d'abord
-(verbatim, pas d'hallucination), puis le même modèle en vision seulement si la grille a un trou
-(en-tête fusionné, filtre, bouton disabled). Jamais un second 8B, jamais de swap. Les pixels ne
-quittent pas la machine.
+Un seul checkpoint côté mlx-serve : `mlx-community/Qwen3.5-9B-MLX-4bit` (~6 Go, **texte +
+vision**). Le 35B n'est plus le défaut : même famille, plus léger, meilleur sur la prose REDUCE
+mesurée. Les captures : OCR Vision d'abord, VLM seulement si la grille a un trou. Jamais deux
+modèles chargés en même temps. Les pixels ne quittent pas la machine.
 
 Règle : Claude ne reçoit jamais le document brut par défaut. Il envoie une **mission + des
-sources** (`repo://`, `image://`, `log://`). `local_task` acquiert le contexte, boucle sur des
-outils déterministes, et rend un paquet de preuves. Drill-down ensuite (`local_expand`,
-`local_image_crop`).
+sources** (`repo://`, `image://`, `log://`). Un routeur déterministe choisit le palier le moins cher
+qui suffit : **DIRECT** (rg / OCR / git, zéro LLM local), **REDUCE** (extraction high-signal, synthèse
+locale seulement si l'extrait ne suffit pas), **AGENT** (boucle bornée), ou **CLAUDE** (risque élevé). Drill-down ensuite
+(`local_expand`, `local_image_crop`).
 
 Les outils fins (`local_search`, `local_image`, `local_fix`, …) restent pour un pas unique déjà
 identifié. Ne pas déléguer 20 lignes déjà chargées.
@@ -29,7 +33,24 @@ Claude donne une mission, pas des fichiers déjà lus.
 
 ## Ce que ça rapporte, mesuré
 
-Pas un x2 magique. Le gain suit ce qui est intercepté **avant** d'entrer dans Claude.
+Le banc **DIRECT → REDUCE → AGENT** (2 septembre 2026, 9B seul) est dans [`BENCHMARKS.md`](BENCHMARKS.md). Extraire :
+
+| Scenario | Direct avoided | Interception | Correct | Latency |
+| --- | ---: | ---: | --- | ---: |
+| 2.2 MB log, tier REDUCE, extract only | 560 087 tok | 99.8% | yes | 0.04 s |
+| Tiny 297 B repo, tier DIRECT | 0 (packet 235 tok > 74) | 0% | yes | 0.03 s |
+| Recette LYSI-5177, 2 annexes PNG | 34 631 tok | 98.5% | yes (`pixel`, `SHA256`) | 0.7 s |
+| Module `route_task`, DIRECT | 10 618 tok | 98.1% | yes | 0.03 s |
+
+Verdict: **niche but useful**. DIRECT and extract-only REDUCE are the value. The 9B is the default local model. A 35B loop is not the product.
+
+Older volume numbers (Symfony repo, `tests/bench.py`) remain below. They measure specialized tools (`local_log_analysis`, `local_search`), not the `local_task` loop.
+
+### When it helps / when it doesn't
+
+HELPS MOST: large logs (REDUCE), screenshots kept off Claude, noisy test suites, unknown-module exploration.
+
+HELPS LITTLE: architecture talk, short SQL, instructions Claude must read verbatim, context already loaded. Tiny files: DIRECT skips the 35B (0.08 s) but the packet can still exceed the source; `rg` remains smaller. The ~2% on a code-only recette session is real, not a failure of measurement.
 
 | Type de session | Potentiel observé ou cible |
 |---|---|
@@ -90,20 +111,18 @@ rien à changer en cas de bascule de modèle.
 
 ### Choix du modèle
 
-Banc comparatif sur les mêmes épreuves (dérivation de motifs, synthèses, JSON difficile), à code
-identique :
+Défaut mesuré pour `local_task` (DIRECT / REDUCE extract / tool call) : **`mlx-community/Qwen3.5-9B-MLX-4bit`** (~6 Go).
+
+Banc historique sur les épreuves `local_search` (dérivation de motifs), à code identique :
 
 | Modèle                               | Exactitude | Banc de 15 tours | Observation                                        |
 | ------------------------------------ | ---------- | ---------------- | -------------------------------------------------- |
-| Qwen3.6-35B-A3B 4-bit (20 Go)        | 15/15      | 43 s             | Motifs plus sélectifs, réponses plus courtes. Même checkpoint : vision. |
-| Ornith-1.5-35B-A3B 4-bit (19,5 Go)   | 14/15      | 98 s             | Modèle « reasoning », plus lent, moins déterministe, texte seul          |
+| Qwen3.5-9B-MLX-4bit (6 Go)           | défaut `local_task` | ping 0,18 s | Premier `search_repo` en 1,9 s. REDUCE extract-only sans LLM. |
+| Qwen3.6-35B-A3B 4-bit (20 Go)        | 15/15 `local_search` | 43 s        | Plus rapide sur un gros digest LLM, prose log moins juste. |
+| Ornith-1.5-35B-A3B 4-bit (19,5 Go)   | 14/15      | 98 s             | Reasoning, plus lent, texte seul                   |
 
-Le bon profil : un MoE non-reasoning d'environ 20 Go **avec vision**. Les tâches code sont de la
-synthèse encadrée ; la vision ne s'ajoute pas par un second modèle, elle est déjà dans Qwen3.6.
-Ornith est plus lent et moins juste. Gemma-4-26B a aussi la vision mais oblige à décharger le 35B.
-Avec `mlx-serve`, permuter se fait sans redémarrage :
-`POST /v1/unload-model` puis `POST /v1/load-model {"model": "mlx-community/Qwen3.6-35B-A3B-4bit"}`.
-`local_ping` expose `vision: true` quand le modèle chargé déclare `image` dans `input_modalities`.
+Un seul modèle chargé. Permuter : `POST /v1/unload-model` puis `POST /v1/load-model`.
+`local_ping` expose `vision: true` quand le modèle déclare `image` dans `input_modalities`.
 
 ## Language
 
@@ -250,9 +269,10 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 | `LOCAL_AGENT_MAX_MATCHES`       | `200`                        | Correspondances ripgrep conservées                           |
 | `LOCAL_AGENT_FIX_MAX_FILE_SIZE` | `40000`                      | Au-delà, un fichier n'est pas réécrit                        |
 | `LOCAL_AGENT_COMMAND_TIMEOUT`   | `900`                        | Timeout des contrôles projet                                 |
-| `LOCAL_AGENT_COMPOUND_TURNS`    | `25`                         | Facteur de tours restants pour l'effet facturé (one-shot × N) |
+| `LOCAL_AGENT_COMPOUND_TURNS`    | `25`                         | Facteur de tours pour l'estime d'exposition (pas du billed). `0` la désactive |
 | `LOCAL_AGENT_LOCAL_CONTEXT_BUDGET` | `48000` | Taille max du contexte de la boucle d'outils |
-| `LOCAL_AGENT_MAX_RETRIES` | `2` | Erreurs d'outil consécutives avant `needs_claude` |
+| `LOCAL_AGENT_DIRECT_CONTEXT_THRESHOLD` | `2000` | Tokens of raw source below which DIRECT forbids a local LLM |
+| `LOCAL_AGENT_FORCE_TIER` | (empty) | Test hook: `direct`, `reduce`, `agent`, `claude` |
 | `LOCAL_AGENT_REPO_ROOT`         | racine du dépôt              | Surcharge de la racine, utile pour les tests                  |
 
 Les anciens noms `MLX_*` restent lus en rétrocompatibilité quand la variante `LOCAL_LLM_*` est absente.
@@ -354,8 +374,11 @@ appliqué et qu'aucune réponse ne dépasse 4 000 caractères. Code de sortie no
 ## Bancs de mesure
 
 ```bash
-python3 ~/.local-agent/tests/bench.py             # volume économisé par tâche, et latence
-python3 ~/.local-agent/tests/bench_exactitude.py --tours 3   # justesse contre vérité terrain
+~/.local-agent/bin/local-agent benchmark all          # PROVE IT harness, writes var/last-benchmark.json
+~/.local-agent/bin/local-agent benchmark logs
+~/.local-agent/bin/local-agent benchmark all --no-llm # baselines + deterministic tools only
+python3 ~/.local-agent/tests/bench.py                 # older per-tool volume bench
+python3 ~/.local-agent/tests/bench_exactitude.py --tours 3
 ```
 
 Les cas vivent dans `tests/cases.json` et visent ce dépôt même, sans dépendance à un projet

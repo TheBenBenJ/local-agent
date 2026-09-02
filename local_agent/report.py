@@ -24,6 +24,7 @@ class Report:
     stats: dict[str, object] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     details: str = ""
+    artifacts: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         payload = {
@@ -38,6 +39,7 @@ class Report:
             "next_actions": self.next_actions,
             "stats": self.stats,
             "errors": self.errors,
+            "artifacts": self.artifacts,
         }
         if self.details:
             payload["details"] = self.details

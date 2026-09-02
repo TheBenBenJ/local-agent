@@ -201,18 +201,29 @@ def main() -> None:
             sources=["repo://local_agent"],
             store_path=work / "dead.db",
         )
-        check("LLM down escalate", "needs_claude" in down.summary.lower())
-        check("LLM down message", "unavailable" in down.summary.lower())
+        check("DIRECT ignore LLM down", down.stats.get("tier") == "direct")
+        check("DIRECT llm_calls 0", down.stats.get("local_llm_calls") == 0)
+        check("DIRECT status", "STATUS:" in down.summary)
+
+        down_agent = run_task(
+            Config(repo_root=home, autonomy="read_only", max_runtime=30, max_steps=6, vision=False, force_tier="agent"),
+            Dead(),
+            "Why do expired contracts remain visible?",
+            sources=["repo://."],
+            store_path=work / "dead-agent.db",
+        )
+        check("AGENT LLM down escalate", "needs_claude" in down_agent.summary.lower())
+        check("AGENT LLM down message", "unavailable" in down_agent.summary.lower())
 
         list_call = _tool("list_files", {"path": "."})
         budget = run_task(
-            Config(repo_root=playground, autonomy="read_only", max_runtime=30, max_steps=1, vision=False),
+            Config(repo_root=playground, autonomy="read_only", max_runtime=30, max_steps=1, vision=False, force_tier="agent"),
             Scripted(
                 [
                     Completion(text="", tool_calls=[list_call], raw_message={"role": "assistant", "tool_calls": [list_call]}),
                 ]
             ),
-            "List files",
+            "Why do expired contracts remain visible?",
             sources=["repo://."],
             store_path=work / "budget.db",
         )

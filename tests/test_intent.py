@@ -116,9 +116,11 @@ diff --git a/src/Foo.php b/src/Foo.php
 
     from local_agent.budget import billed_chars, savings_footer
     check("effet facturé = one-shot × tours", billed_chars(14_339 * 4, 25) == 14_339 * 4 * 25)
-    check("tours restants au minimum 1", billed_chars(100, 0) == 100)
+    check("tours a 0 desactive l'estime", billed_chars(100, 0) == 0)
     footer = savings_footer(4000, 400, 25, session_saved=4000, session_compounded=100000, lifetime_saved=4000, lifetime_compounded=100000)
-    check("pied brut / visible / évité", "Raw context processed locally" in footer and "not billed" in footer)
+    check("pied brut / visible / évité", "Raw context processed locally" in footer and "NOT equivalent to billed" in footer)
+    off = savings_footer(4000, 400, 0, session_saved=4000, session_compounded=0, lifetime_saved=4000, lifetime_compounded=0)
+    check("pied sans estime", "LOCAL_AGENT_COMPOUND_TURNS=0" in off)
 
     print("tous les contrôles de revue de diff passent")
 

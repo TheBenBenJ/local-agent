@@ -19,7 +19,7 @@ from .report import Report, clamp, render_markdown
 from . import agent, compare, doctor, edit, ocr, shell, store, tasks
 
 SERVER_NAME = "local-agent"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 DEFAULT_PROTOCOL = "2024-11-05"
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 
@@ -42,11 +42,10 @@ TOOLS: list[dict] = [
         "name": "local_task",
         "description": (
             "Primary entry: send a mission and sources (repo://, image://, log://, jira://, confluence://, data://). "
-            "The local agent acquires context itself, searches, reads, optionally OCRs, may run "
-            "whitelisted tests, and returns a compact evidence packet. Do not load files into your "
-            "context first. autonomy: read_only (default), patch/safe (propose a patch), auto "
-            "(apply, must be explicit). High-risk or low-confidence work returns status needs_claude. "
-            "Existing tools (local_search, local_image, ...) remain for a single known step."
+            "Prefer this before acquiring large repo, log, image or doc context yourself. "
+            "Known symbol or tiny source: deterministic tools, no local LLM. "
+            "Large reducible source: extract then one local synthesis. "
+            "High-risk or architecture: skip, keep Claude. "
         ),
         "inputSchema": {
             "type": "object",
@@ -66,6 +65,14 @@ TOOLS: list[dict] = [
                 "output_budget": {"type": "integer", "description": "Max tokens in the local model completion"},
                 "local_context_budget": {"type": "integer", "description": "Max characters kept in the local tool-loop context"},
                 "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                "trace": {
+                    "type": "boolean",
+                    "description": "Store a local tool-call trace. Not returned in the MCP payload.",
+                },
+                "why": {
+                    "type": "string",
+                    "description": "Optional reason this was delegated (screenshot, large_log, failing_tests, ...)",
+                },
                 "repo": _REPO,
             },
             "required": ["task"],
@@ -89,9 +96,8 @@ TOOLS: list[dict] = [
     {
         "name": "local_metrics",
         "description": (
-            "Session dashboard: local tasks, raw vs Claude-visible tokens, direct context avoided. "
-            "Context exposure avoided is not shown here; that estimate only appears on tool footers "
-            "and is labelled estimate, not billed."
+            "Current-session dashboard (LOCAL-AGENT CURRENT SESSION) plus lifetime totals. "
+            "Direct context avoided only. Exposure estimate is not shown here."
         ),
         "inputSchema": {"type": "object", "properties": {"repo": _REPO}},
     },
@@ -379,11 +385,26 @@ class ToolResult:
     media: list[dict] = field(default_factory=list)
 
 
-def _result_from_report(report: Report, config: Config) -> ToolResult:
-    text = render_markdown(report, config)
-    source = report.stats.get("source_caracteres")
-    source_i = int(source) if isinstance(source, int) else 0
-    saved = max(0, source_i - len(text)) if source_i else 0
+def _result_from_report(report: Report, config: Config, tool: str = "") -> ToolResult:
+    db = store.Store()
+    try:
+        store.attach_report_evidence(db, report)
+        text = render_markdown(report, config)
+        source = report.stats.get("source_caracteres")
+        source_i = int(source) if isinstance(source, int) else 0
+        saved = max(0, source_i - len(text)) if source_i else 0
+        if tool:
+            db.record_metric(
+                tool=tool,
+                source_type=tool.replace("local_", "", 1),
+                raw_tokens=source_i // 4,
+                visible_tokens=len(text) // 4,
+                avoided_tokens=max(0, source_i - len(text)) // 4,
+                latency_s=float(report.stats.get("latency_s") or 0),
+                status="ok",
+            )
+    finally:
+        db.close()
     return ToolResult(text=text, saved=saved, source_chars=source_i)
 
 
@@ -406,7 +427,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             "checks_disponibles": checks,
             "ocr": ocr.backend_status(),
             "config": config.as_summary(),
-            "metrics": store.Store().session_stats(),
+            "metrics": store.Store().stats(),
         }
         return ToolResult(text=json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -421,6 +442,8 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             output_budget=arguments.get("output_budget"),
             local_context_budget=arguments.get("local_context_budget"),
             risk_level=arguments.get("risk_level"),
+            trace=bool(arguments.get("trace")),
+            why=arguments.get("why"),
         )
     elif name == "local_expand":
         ids: list[str] = []
@@ -449,7 +472,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
                             }
                         )
                 else:
-                    payload = store.expand(identifier, db)
+                    payload = store.expand(identifier, db, config)
                     chunks.append(json.dumps(payload, ensure_ascii=False, indent=2))
                     source_chars += len(json.dumps(payload.get("payload") or {}))
             except (GuardrailError, ValueError) as error:
@@ -458,36 +481,49 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
         result = ToolResult(text=text, saved=max(0, source_chars - len(text)), source_chars=source_chars, media=media)
         return result
     elif name == "local_metrics":
-        stats = store.Store().session_stats()
+        stats = store.Store().stats()
+        current = stats["current"]
+        lifetime = stats["lifetime"]
+
+        def _block(title: str, bundle: dict) -> list[str]:
+            return [
+                title,
+                f"Tasks                             {bundle['local_tasks']}",
+                f"Completed locally                 {bundle['completed_without_claude']}",
+                f"Escalated to Claude               {bundle['escalated']}",
+                f"Local completion rate             {bundle['offload_rate']}",
+                "",
+                f"Local tool calls                  {bundle['tool_calls']}",
+                f"Local LLM in/out tokens           {bundle['local_llm_in']}/{bundle['local_llm_out']}",
+                f"Local LLM calls                   {bundle.get('local_llm_calls') or 0}",
+                f"Avoidable local LLM calls         {bundle.get('avoidable_local_llm_calls') or 0}",
+                f"Tiers (direct/reduce/agent)       {bundle.get('by_tier') or {}}",
+                f"Cache hits                        {bundle['cache_hits']}",
+                "",
+                f"Raw context processed             {bundle['raw_tokens']}",
+                f"Claude-visible context            {bundle['visible_tokens']}",
+                f"Direct context avoided            {bundle['avoided_tokens']}",
+                f"Average packet tokens             {bundle['avg_packet_tokens']}",
+                f"Average latency s                 {bundle['avg_latency_s']}",
+            ]
+
         lines = [
-            "LOCAL-AGENT SESSION",
-            f"Session                           {stats.get('session_id', '')}",
+            f"Session                           {stats['session_id']}",
             "",
-            f"Local tasks                       {stats['local_tasks']}",
-            f"Completed without Claude          {stats['completed_without_claude']}",
-            f"Escalated                          {stats['escalated']}",
+            *_block("LOCAL-AGENT CURRENT SESSION", current),
             "",
-            f"Local tool calls                  {stats['tool_calls']}",
-            f"Local LLM in/out tokens           {stats.get('local_llm_in', 0)}/{stats.get('local_llm_out', 0)}",
-            f"Cache hits                        {stats.get('cache_hits', 0)}",
+            *_block("LOCAL-AGENT LIFETIME", lifetime),
             "",
-            f"Raw context intercepted           {stats['raw_tokens']}",
-            f"Claude-visible context            {stats['visible_tokens']}",
-            f"Direct context avoided            {stats['avoided_tokens']}",
-            f"Average packet tokens             {stats.get('avg_packet_tokens', 0)}",
-            "",
-            "By source:",
+            "Direct context avoided is not billed Claude usage.",
+            "No exposure estimate here; see tool footers (disabled if LOCAL_AGENT_COMPOUND_TURNS=0).",
         ]
-        for key, value in sorted((stats.get("by_source") or {}).items()):
-            lines.append(f"  {key:16} {value}")
-        lines += ["", f"Average latency s                 {stats['avg_latency_s']}", "", "No billed Claude tokens are claimed."]
         text = "\n".join(lines)
         return ToolResult(text=text)
     elif name == "local_image_compare":
         report = compare.compare_images(
             config, str(arguments["reference"]), str(arguments["current"]), client=client
         )
-        return _result_from_report(report, ocr.image_config(config))
+        return _result_from_report(report, ocr.image_config(config), tool=name)
     elif name == "local_search":
         report = tasks.search(
             config, client, str(arguments["query"]), arguments.get("path"), arguments.get("globs")
@@ -559,12 +595,12 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             arguments.get("task"),
             client=client,
         )
-        return _result_from_report(report, ocr.image_config(config))
+        return _result_from_report(report, ocr.image_config(config), tool=name)
     elif name == "local_image_crop":
         if not arguments.get("id"):
             raise ValueError("id is required, e.g. a832b1c4-R1")
         report, crop_path = ocr.crop_region(config, str(arguments["id"]))
-        result = _result_from_report(report, ocr.image_config(config))
+        result = _result_from_report(report, ocr.image_config(config), tool=name)
         size = crop_path.stat().st_size
         if 0 < size <= ocr.MAX_EMBED_BYTES:
             result.media.append(
@@ -580,7 +616,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
     else:
         raise ValueError(f"unknown tool: {name}")
 
-    return _result_from_report(report, config)
+    return _result_from_report(report, config, tool=name)
 
 
 class Server:
@@ -630,7 +666,7 @@ class Server:
         start = time.monotonic()
         try:
             result = _handle_tool(name, arguments, self.config, self.client)
-            remaining = max(1, self.config.compound_turns)
+            remaining = max(0, int(self.config.compound_turns))
             compounded = billed_chars(result.saved, remaining)
             _log_usage(
                 name,

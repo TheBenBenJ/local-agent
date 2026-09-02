@@ -86,7 +86,7 @@ def ensure_usable_root(config: Config) -> None:
 
 def resolve_path(config: Config, raw: str | None) -> Path:
     ensure_usable_root(config)
-    root = config.repo_root
+    root = config.repo_root.resolve()
     candidate = Path(raw or ".")
     resolved = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
     try:
@@ -278,6 +278,7 @@ def grep(
         match["file_hits"] = per_file[name]
         match["file_score"] = per_file[name] + (DECLARATION_BONUS if name in declaring else 0)
 
+    matches.sort(key=lambda item: (-int(item.get("file_score") or 0), str(item.get("file") or ""), int(item.get("line") or 0)))
     if total <= limit:
         return matches, total
     return (balanced_sample(matches, limit) if balance_by_file else matches[:limit]), total

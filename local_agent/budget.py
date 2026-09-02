@@ -29,7 +29,10 @@ def is_worth_delegating(raw: str, threshold: int = PASSTHROUGH_CHARS) -> bool:
 
 def billed_chars(saved_chars: int, remaining_turns: int) -> int:
     """One-shot avoided characters scaled by how many later prompts they would have stayed in."""
-    return max(0, int(saved_chars)) * max(1, int(remaining_turns))
+    turns = int(remaining_turns)
+    if turns <= 0:
+        return 0
+    return max(0, int(saved_chars)) * turns
 
 
 def tokens_from_chars(chars: int) -> int:
@@ -50,19 +53,25 @@ def savings_footer(
     raw = tokens_from_chars(source_chars)
     visible = tokens_from_chars(returned_chars)
     avoided = max(0, raw - visible)
+    lines = [
+        f"\n\nRaw context processed locally: ~{raw} tokens",
+        f"Claude-visible context returned: ~{visible} tokens",
+        (
+            f"Direct context avoided: ~{avoided} this call · "
+            f"~{tokens_from_chars(session_saved)} this session · "
+            f"~{tokens_from_chars(lifetime_saved)} lifetime"
+        ),
+    ]
+    if remaining_turns <= 0:
+        lines.append("Optional exposure estimate: disabled (LOCAL_AGENT_COMPOUND_TURNS=0).")
+        return "\n".join(lines)
     exposure = tokens_from_chars(billed_chars(avoided * 4, remaining_turns))
-    return (
-        f"\n\nRaw context processed locally: ~{raw} tokens\n"
-        f"Claude-visible context returned: ~{visible} tokens\n"
-        f"Direct context avoided: ~{avoided} this call · "
-        f"~{tokens_from_chars(session_saved)} this session · "
-        f"~{tokens_from_chars(lifetime_saved)} lifetime\n"
-        f"Context exposure avoided (×{remaining_turns} further turns in the prefix): "
-        f"~{exposure} this call · ~{tokens_from_chars(session_compounded)} this session · "
-        f"~{tokens_from_chars(lifetime_compounded)} lifetime. "
-        "Estimate, not billed: cache and compaction apply. "
-        "The same call is worth more at the start of a session than at the end."
+    lines.append(
+        f"Optional exposure estimate: ~{exposure} token-turns "
+        f"(assumption: {remaining_turns} future turns). "
+        "NOT equivalent to billed Claude tokens. cache and compaction apply."
     )
+    return "\n".join(lines)
 
 
 def passthrough(

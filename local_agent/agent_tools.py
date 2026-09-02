@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
-from . import edit, files, ocr, shell, tasks, vision
+from . import edit, extract, files, ocr, shell, tasks, vision
 from .compare import compare_images
 from .config import Config
 from .files import GuardrailError
@@ -14,7 +15,7 @@ from .providers import data as data_provider
 from .providers import jira as jira_provider
 from .providers import rules as rules_provider
 from .risk import AUTO, PATCH, READ_ONLY
-from .store import Store, sha256_file
+from .store import Store, sha256_bytes, sha256_file
 
 MAX_TOOL_CHARS = 8_000
 
@@ -302,6 +303,16 @@ class ToolContext:
         self.llm_in = 0
         self.llm_out = 0
         self.cache_hits = 0
+        self.artifacts: dict[str, object] = {}
+        self.trace: list[dict] = []
+        self.tool_calls = 0
+        self.tool_ms = 0.0
+        self.llm_ms = 0.0
+        self.llm_calls = 0
+        self.redundant_calls = 0
+        self.zero_evidence_calls = 0
+        self.routing_ms = 0.0
+        self.preprocess_ms = 0.0
 
     def remember(self, kind: str, **kwargs) -> str:
         identifier = self.db.put(kind, task_id=self.task_id, **kwargs)
@@ -310,16 +321,24 @@ class ToolContext:
 
 
 def dispatch(ctx: ToolContext, name: str, arguments: dict) -> str:
+    started = time.monotonic()
     try:
         handler = TOOLS[name]
     except KeyError:
         ctx.errors += 1
+        ctx.tool_calls += 1
         return _json({"error": f"unknown tool {name}"})
     try:
-        return handler(ctx, arguments or {})
+        result = handler(ctx, arguments or {})
     except (GuardrailError, ValueError, OSError) as error:
         ctx.errors += 1
-        return _json({"error": str(error)})
+        result = _json({"error": str(error)})
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    ctx.tool_ms += elapsed_ms / 1000
+    ctx.tool_calls += 1
+    hint = arguments.get("path") or arguments.get("pattern") or arguments.get("kind") or arguments.get("key") or ""
+    ctx.trace.append({"tool": name, "ms": elapsed_ms, "hint": str(hint)[:80], "ok": '"error"' not in result[:80]})
+    return result
 
 
 def _search_repo(ctx: ToolContext, arguments: dict) -> str:
@@ -397,13 +416,21 @@ def _git_diff(ctx: ToolContext, arguments: dict) -> str:
     argv = task_mod._resolve_diff_args(ctx.config, scope, arguments.get("base"))
     result = shell.git(ctx.config, argv)
     ctx.source_chars += len(result.stdout)
+    clipped = _clip(result.stdout, 12_000)
+    structured = extract.extract_diff(result.stdout)
     identifier = ctx.remember(
         "diff",
         source=f"git:{scope}",
-        summary=f"diff {scope} {len(result.stdout)} chars",
-        payload={"exit": result.exit_code},
+        summary=(
+            f"diff {scope} {structured['file_count']} files "
+            f"+{structured['additions']}/-{structured['deletions']}"
+        ),
+        sha256=sha256_bytes(clipped.encode()),
+        payload={"exit": result.exit_code, "diff": clipped, **structured, "high_signal": True},
     )
-    return _json({"evidence": identifier, "exit": result.exit_code, "diff": _clip(result.stdout, 12_000)})
+    ctx.artifacts["diff_id"] = identifier
+    ctx.found = ctx.found or bool(structured["file_count"] or result.stdout.strip())
+    return _json({"evidence": identifier, "exit": result.exit_code, "diff": clipped, **structured})
 
 
 def _run_check(ctx: ToolContext, arguments: dict) -> str:
@@ -412,12 +439,29 @@ def _run_check(ctx: ToolContext, arguments: dict) -> str:
     argv, spec = shell.build_check_command(checks, kind, arguments.get("target"), arguments.get("filter"))
     result = shell.run(argv, ctx.config.repo_root, ctx.config.command_timeout)
     ctx.tests_status = "PASS" if result.exit_code == 0 else "FAIL"
+    parsed = extract.extract_test_output(result.output, kind=kind)
     identifier = ctx.remember(
         "test",
         source=kind,
         summary=f"{spec.get('label') or kind} exit {result.exit_code}",
-        payload={"exit": result.exit_code, "timed_out": result.timed_out},
+        payload={
+            "exit": result.exit_code,
+            "timed_out": result.timed_out,
+            "output": _clip(result.output, 6_000),
+            "failures": parsed.get("failures") or [],
+            "high_signal": bool(parsed.get("failures")),
+        },
     )
+    ctx.artifacts["test_run_id"] = identifier
+    ctx.found = True
+    for failure in parsed.get("failures") or []:
+        ctx.remember(
+            "test",
+            source=kind,
+            summary=str(failure.get("failure") or failure.get("test") or "")[:300],
+            lines=str(failure.get("lines") or ""),
+            payload={**failure, "high_signal": True},
+        )
     return _json(
         {
             "evidence": identifier,
@@ -425,34 +469,100 @@ def _run_check(ctx: ToolContext, arguments: dict) -> str:
             "exit": result.exit_code,
             "timed_out": result.timed_out,
             "output": _clip(result.output, 6_000),
+            "failures": parsed.get("failures") or [],
         }
     )
 
 
 def _inspect_log(ctx: ToolContext, arguments: dict) -> str:
     target = files.resolve_path(ctx.config, str(arguments.get("path") or ""))
-    patterns = arguments.get("patterns") or ["ERROR", "CRITICAL", "Exception", "Traceback"]
-    matches, total = files.grep(ctx.config, target, list(patterns), max_matches=40, ignore_case=True)
-    ctx.source_chars += sum(len(item.get("text") or "") for item in matches)
-    identifier = ctx.remember("log", source=str(arguments.get("path")), summary=f"{len(matches)}/{total} log lines", payload={"total": total})
-    return _json({"evidence": identifier, "total": total, "matches": matches[:25]})
+    custom = [str(item) for item in (arguments.get("patterns") or []) if str(item).strip()]
+    if custom:
+        matches, total = files.grep(ctx.config, target, custom, max_matches=80, ignore_case=True)
+        ctx.source_chars += sum(len(item.get("text") or "") for item in matches)
+        identifier = ctx.remember(
+            "log",
+            source=str(arguments.get("path")),
+            summary=f"{len(matches)}/{total} custom-pattern lines",
+            payload={"total": total, "matches": matches[:25], "high_signal": True},
+        )
+        ctx.found = ctx.found or bool(matches)
+        return _json({"evidence": identifier, "total": total, "matches": matches[:25]})
+    payload = extract.extract_log(target)
+    ctx.source_chars += int(payload.get("bytes") or 0)
+    ctx.found = ctx.found or bool(payload.get("hits"))
+    digest = sha256_file(target) if target.is_file() else ""
+    identifier = ctx.remember(
+        "log",
+        source=str(arguments.get("path")),
+        summary=f"{payload.get('hits') or 0} high-signal / {payload.get('unique_signatures') or 0} signatures",
+        sha256=digest,
+        path=str(target),
+        payload={
+            "total": payload.get("hits"),
+            "signatures": payload.get("signatures") or [],
+            "first_hit": payload.get("first_hit"),
+            "last_hit": payload.get("last_hit"),
+            "high_signal": True,
+        },
+    )
+    excerpt_ids: list[str] = []
+    for excerpt in payload.get("excerpts") or []:
+        excerpt_ids.append(
+            ctx.remember(
+                "log",
+                source=str(arguments.get("path")),
+                summary=(excerpt.get("content") or excerpt.get("signature") or "")[:300],
+                sha256=digest,
+                path=str(target),
+                lines=str(excerpt.get("lines") or ""),
+                payload={**excerpt, "high_signal": True},
+            )
+        )
+    return _json(
+        {
+            "evidence": identifier,
+            "total": payload.get("hits"),
+            "signatures": payload.get("signatures") or [],
+            "excerpt_ids": excerpt_ids,
+        }
+    )
 
 
 def _inspect_image(ctx: ToolContext, arguments: dict) -> str:
     report = ocr.read_images(ctx.config, str(arguments.get("path")), None, arguments.get("task"), client=ctx.client)
     ctx.source_chars += int(report.stats.get("source_caracteres") or 0)
+    path = str(arguments.get("path") or "")
+    digest = ""
+    candidate = Path(path).expanduser()
+    if candidate.is_file():
+        digest = sha256_file(candidate)
     identifier = ctx.remember(
         "image",
-        source=str(arguments.get("path")),
+        source=path,
         summary=report.summary[:300],
+        sha256=digest,
+        path=path,
         payload={"findings": report.findings[:8], "regions": [item.get("id") for item in (report.evidence or [])[:8]]},
     )
+    region_ids = []
+    for item in (report.evidence or [])[:12]:
+        region_ids.append(
+            ctx.remember(
+                "image",
+                source=str(item.get("id") or path),
+                summary=str(item.get("content") or item.get("id") or "")[:300],
+                sha256=digest,
+                path=path,
+                payload={**item, "region": item.get("id")},
+            )
+        )
     return _json(
         {
             "evidence": identifier,
+            "regions": region_ids,
             "summary": report.summary,
             "findings": report.findings[:12],
-            "regions": [item.get("id") for item in (report.evidence or [])[:12]],
             "vision": report.stats.get("vision"),
         }
     )
@@ -461,8 +571,21 @@ def _inspect_image(ctx: ToolContext, arguments: dict) -> str:
 def _compare(ctx: ToolContext, arguments: dict) -> str:
     report = compare_images(ctx.config, str(arguments["reference"]), str(arguments["current"]), client=ctx.client)
     ctx.source_chars += int(report.stats.get("source_caracteres") or 0)
-    items = []
-    for item in (report.evidence or [])[:8]:
+    verdict = "; ".join(report.findings[:6])[:300] or report.summary[:300]
+    items = [
+        ctx.remember(
+            "image",
+            source="compare",
+            summary=verdict,
+            payload={
+                "findings": report.findings[:8],
+                "sha_left": report.stats.get("sha_left"),
+                "sha_right": report.stats.get("sha_right"),
+                "backend": report.stats.get("backend"),
+            },
+        )
+    ]
+    for item in (report.evidence or [])[:7]:
         items.append(
             ctx.remember(
                 "image",
@@ -472,8 +595,6 @@ def _compare(ctx: ToolContext, arguments: dict) -> str:
                 confidence=item.get("confidence") if isinstance(item.get("confidence"), (int, float)) else None,
             )
         )
-    if not items:
-        items.append(ctx.remember("image", source="compare", summary=report.summary[:300], payload={"findings": report.findings[:8]}))
     return _json({"evidence": items, "summary": report.summary, "findings": report.findings, "evidence_items": report.evidence[:8]})
 
 
@@ -513,13 +634,18 @@ def _propose_patch(ctx: ToolContext, arguments: dict) -> str:
         raise GuardrailError(f"propose_patch requires autonomy patch or auto, current={ctx.autonomy}")
     report = edit.fix(ctx.config, ctx.client, arguments.get("path"), str(arguments["task"]), mode="propose")
     identifier = ctx.remember("code", source="patch", summary=report.summary[:300], payload={"changes": report.changes[:8]})
-    return _json({"evidence": identifier, "summary": report.summary, "changes": report.changes, "stats": report.stats})
+    patch_id = str((report.stats or {}).get("patch_id") or "")
+    if patch_id:
+        ctx.artifacts["patch_id"] = patch_id
+    return _json({"evidence": identifier, "summary": report.summary, "changes": report.changes, "stats": report.stats, "patch_id": patch_id})
 
 
 def _apply_patch(ctx: ToolContext, arguments: dict) -> str:
     if ctx.autonomy != AUTO:
         raise GuardrailError("apply_patch requires autonomy=auto")
     report = edit.apply_patch(ctx.config, str(arguments["patch_id"]))
+    ctx.artifacts["patch_id"] = str(arguments["patch_id"])
+    ctx.artifacts["files_applied"] = report.changes[:12]
     return _json({"summary": report.summary, "changes": report.changes, "errors": report.errors})
 
 

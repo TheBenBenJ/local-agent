@@ -427,6 +427,7 @@ def read_images(
                 "lines": lines,
                 "regions": regions,
                 "grid": table,
+                "sha256": hashlib.sha256(file_path.read_bytes()).hexdigest(),
             },
         )
         evidence_items.extend(regions)

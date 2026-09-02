@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 
 HIGH_RISK = re.compile(
-    r"\b(securit|authenti|crypto|password|mot de passe|secret|migration|drop table|"
+    r"\b(security|authentication|authorization|auth|securit|authenti|crypto|"
+    r"password|mot de passe|secret|migration|drop table|"
     r"rm -rf|force.?push|sudo|public api|cross-?cutting|infrastructure|"
     r"suppression de donn|delete user|chiffrement|oauth|csrf|xss)\b",
     re.IGNORECASE,

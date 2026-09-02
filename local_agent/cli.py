@@ -96,6 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
     session = subparsers.add_parser("session", help="affiche ou renouvelle l'id de session locale")
     session.add_argument("--new", action="store_true", help="force a new session id")
 
+    bench = subparsers.add_parser("benchmark", help="mesure contexte, latence et justesse sur des taches reelles")
+    bench.add_argument("kind", nargs="?", default="all", help="repo, logs, vision, patch, jira, tests, cache, sessions, all")
+    bench.add_argument("--no-llm", action="store_true", help="baselines only, skip local_task")
+
+    eval_parser = subparsers.add_parser("eval", help="note la justesse des taches du banc (meme manifest)")
+    eval_parser.add_argument("kind", nargs="?", default="all")
+
     return parser
 
 
@@ -177,16 +184,24 @@ def _dispatch(arguments: argparse.Namespace, config, client: MlxClient) -> Repor
             risk_level=arguments.risk_level,
         )
     if command == "expand":
-        payload = [store.expand(item) for item in arguments.ids]
+        payload = [store.expand(item, config=config) for item in arguments.ids]
         return payload[0] if len(payload) == 1 else payload
     if command == "stats":
-        return store.Store().session_stats()
+        return store.Store().stats()
     if command == "session":
         if arguments.new:
             return {"session_id": store.new_session()}
         return {"session_id": store.current_session()}
     if command == "doctor":
         return doctor.check(config, client)
+    if command == "benchmark":
+        from . import benchmark as bench_mod
+
+        return bench_mod.run(config, client, arguments.kind, no_llm=bool(arguments.no_llm))
+    if command == "eval":
+        from . import benchmark as bench_mod
+
+        return bench_mod.run(config, client, arguments.kind, eval_only=True)
     raise ValueError(f"commande inconnue : {command}")
 
 

@@ -141,6 +141,11 @@ class Config:
     )
     enable_cache: bool = field(default_factory=lambda: _bool_env("LOCAL_AGENT_ENABLE_CACHE", True))
     max_retries: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_RETRIES", 2))
+    # Tokens of raw source below which a local LLM must not run. 2000 ≈ 8 kB.
+    direct_context_threshold: int = field(
+        default_factory=lambda: _int_env("LOCAL_AGENT_DIRECT_CONTEXT_THRESHOLD", 2000)
+    )
+    force_tier: str = field(default_factory=lambda: _str_env("LOCAL_AGENT_FORCE_TIER", "").lower())
 
     @property
     def max_output_chars(self) -> int:
@@ -169,6 +174,8 @@ class Config:
             "confidence_threshold": self.confidence_threshold,
             "max_retries": self.max_retries,
             "enable_cache": self.enable_cache,
+            "direct_context_threshold": self.direct_context_threshold,
+            "force_tier": self.force_tier,
             "api_key_set": bool(self.api_key),
         }
 

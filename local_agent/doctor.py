@@ -29,7 +29,6 @@ def check(config: Config, client: MlxClient | None = None) -> dict:
     writable = os.access(db_path.parent, os.W_OK)
     try:
         db = store.Store(db_path)
-        db.record_metric(tool="doctor", source_type="self", raw_tokens=0, visible_tokens=0, avoided_tokens=0)
         db.close()
         add("database", writable, str(db_path))
     except OSError as error:

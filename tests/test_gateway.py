@@ -168,6 +168,7 @@ def main() -> None:
         check("png 1x1", png_size(shot) == (1, 1))
         identical = compare_images(config, str(shot), str(shot))
         check("compare identique", "identical" in identical.summary.lower() or "SHA256" in identical.summary)
+        check("compare identique SHA256 dans findings", any("SHA256" in item for item in identical.findings))
 
         tool_call = {
             "id": "c1",
@@ -185,7 +186,8 @@ def main() -> None:
         )
         report = run_task(config, client, "Where is the evidence Store class?", sources=["repo://local_agent"], store_path=Path(raw) / "t2.db")
         check("local_task status dans le resume", "STATUS:" in report.summary)
-        check("a cherche dans le repo", client.n >= 1)
+        check("DIRECT sans LLM", report.stats.get("local_llm_calls") == 0)
+        check("tier DIRECT", report.stats.get("tier") == "direct")
         check("evidence non vide", bool(report.evidence))
         check("evidence a un extrait", bool(str((report.evidence[0] or {}).get("content") or "").strip()))
         check("backfill locations", any("store.py" in str(loc) for loc in report.locations))

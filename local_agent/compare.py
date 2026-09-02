@@ -58,11 +58,18 @@ def compare_images(config: Config, reference: str, current: str, *, client=None)
     findings: list[str] = []
     evidence: list[dict] = []
     backend = "hash+ocr"
+    ratio = 0.0
     if hash_left == hash_right:
-        findings.append("HIGH: files are byte-identical")
+        findings.append("HIGH: files are byte-identical (SHA256)")
         summary = "Screenshots are identical (SHA256)."
+        evidence.append(
+            {
+                "type": "compare_verdict",
+                "content": f"SHA256 identical {hash_left[:12]}",
+            }
+        )
     else:
-        findings.append("HIGH: file hashes differ")
+        findings.append(f"HIGH: SHA256 hashes differ ({hash_left[:12]} vs {hash_right[:12]})")
         size_left = png_size(left)
         size_right = png_size(right)
         if size_left and size_right and size_left != size_right:
@@ -78,7 +85,7 @@ def compare_images(config: Config, reference: str, current: str, *, client=None)
                 findings.append(f"MEDIUM: pixel change covers {ratio:.0%} of the grid")
             else:
                 findings.append("Pixel grid: no cell above threshold")
-            for index, region in enumerate(regions[:5], start=1):
+            for region in regions[:5]:
                 box = {
                     "x": region.get("x"),
                     "y": region.get("y"),
@@ -87,9 +94,8 @@ def compare_images(config: Config, reference: str, current: str, *, client=None)
                 }
                 evidence.append(
                     {
-                        "id": f"IMG-E{index}",
                         "type": "pixel_region",
-                        "content": f"score={region.get('score')}",
+                        "content": f"pixel region score={region.get('score')}",
                         "confidence": round(float(region.get("score") or 0), 2),
                         "box": box,
                     }
@@ -110,7 +116,20 @@ def compare_images(config: Config, reference: str, current: str, *, client=None)
             findings.append("Text: identical at OCR granularity")
         evidence.extend((ocr_left.evidence or [])[:6])
         evidence.extend((ocr_right.evidence or [])[:6])
-        summary = f"{len(findings)} material differences between {left.name} and {right.name}."
+        summary = (
+            f"{len(findings)} material differences between {left.name} and {right.name} "
+            f"(SHA256 {hash_left[:12]} vs {hash_right[:12]}, pixel {ratio:.0%})."
+        )
+        evidence.insert(
+            0,
+            {
+                "type": "compare_verdict",
+                "content": (
+                    f"SHA256 {hash_left[:12]} vs {hash_right[:12]}; "
+                    f"pixel change {ratio:.0%}; {backend}"
+                ),
+            },
+        )
     source = left.stat().st_size + right.stat().st_size
     return Report(
         title="Image compare",
