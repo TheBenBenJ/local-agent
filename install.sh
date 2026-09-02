@@ -44,5 +44,8 @@ register(Path.home() / ".cursor" / "mcp.json", "Cursor")
 PY
 
 echo
+python3 "$ROOT/bin/local-agent" doctor || true
+echo
 echo "Terminé. Redémarrer Claude Code et Cursor, puis vérifier avec l'outil local_ping."
 echo "Serveur local attendu sur http://127.0.0.1:11234/v1 (surcharger via LOCAL_LLM_BASE_URL)."
+echo "Outil principal : local_task (mission + sources). Les outils fins restent disponibles."

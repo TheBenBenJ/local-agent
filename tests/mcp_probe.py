@@ -89,6 +89,11 @@ def probe(calls: list[tuple[str, dict]], repo_root: Path) -> int:
     print(f"outils exposés : {len(tools)} -> {', '.join(tool['name'] for tool in tools)}")
     if not tools:
         failures.append("tools/list vide")
+    names = {tool.get("name") for tool in tools}
+    required = {"local_task", "local_expand", "local_metrics", "local_image_compare"}
+    missing = sorted(required - names)
+    if missing:
+        failures.append("tools/list manque : " + ", ".join(missing))
 
     for index, (name, arguments) in enumerate(calls, start=2):
         message = responses.get(index)

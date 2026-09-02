@@ -36,6 +36,52 @@ SYSTEM_DERIVE = (
     "never the surface wording of the question."
 )
 
+SYSTEM_VISION = (
+    "You look at a screenshot to fill what OCR cannot: merged cells, column assignment, "
+    "selected filters, disabled buttons, empty states, layout. "
+    "The OCR table is the source of truth for numbers and labels. "
+    "Never invent a value that is not clearly on the image. "
+    "Do not restate the OCR table. "
+    "Write every user-facing string in the same language as the task; "
+    "if none was given, match the language of the OCR text."
+)
+
+JSON_VISION = """Reply with a single valid JSON object, no markdown fence, using these keys:
+{
+  "notes": ["layout or assignment facts OCR missed"],
+  "ui": ["visible filters, selected values, disabled buttons, errors"],
+  "header_split": ["true header per column if OCR glued two labels"]
+}
+Empty lists allowed. Max 8 items per list, 140 characters per item.
+OCR numbers stay authoritative. Do not list cell values already in the OCR table
+unless a column assignment is wrong.
+Write string values in the same language as the task."""
+
+
+SYSTEM_AGENT = (
+    "You are the local execution layer of a coding agent. The orchestrator sent a mission, not files. "
+    "Use tools to inspect the repository yourself. Prefer search_repo, then read_file windows. "
+    "For two screenshots, compare_images then crop_image. Cite evidence ids (CODE-E, IMG-E, LOG-E). "
+    "Do not dump full files. When you have enough, stop calling tools and reply with the JSON object only. "
+    "If you are unsure or the change is high-risk, status needs_claude. Do not invent a fix. "
+    "Write user-facing strings in the same language as the task."
+)
+
+JSON_TASK = """Reply with a single valid JSON object, no markdown fence:
+{
+  "status": "success or needs_claude",
+  "summary": "3 sentences max",
+  "root_cause": "one sentence or empty",
+  "findings": ["short fact"],
+  "files": ["relative/path"],
+  "locations": ["relative/path:12"],
+  "changes": ["proposed or applied change"],
+  "questions": ["what Claude must decide"],
+  "confidence": "HIGH or MEDIUM or LOW"
+}
+confidence is an escalation heuristic (HIGH/MEDIUM/LOW or 0-1), not a probability. Max 8 list items.
+Write string values in the same language as the task."""
+
 
 JSON_CONTRACT = """Reply with a single valid JSON object, no markdown fence, using these keys:
 {
@@ -107,17 +153,25 @@ def _candidates(text: str) -> list[str]:
 
 def extract_json(text: str) -> dict:
     """Récupère l'objet JSON d'une réponse, malgré le bruit, les balises markdown et les troncatures."""
+    payload = extract_raw(text)
+    if payload:
+        return normalize(payload)
+    rescued = _rescue_fields(text)
+    if rescued:
+        return normalize(rescued)
+    return normalize({"summary": text.strip()[:1500]})
+
+
+def extract_raw(text: str) -> dict:
+    """Objet JSON tel quel, sans le réduire aux clés d'un rapport d'analyse."""
     for candidate in _candidates(text):
         try:
             payload = json.loads(candidate)
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict):
-            return normalize(payload)
-    rescued = _rescue_fields(text)
-    if rescued:
-        return normalize(rescued)
-    return normalize({"summary": text.strip()[:1500]})
+            return payload
+    return {}
 
 
 def extract_list(text: str, key: str) -> list[str]:

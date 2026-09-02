@@ -1,0 +1,128 @@
+"""Comparaison de deux captures : hash, dimensions, OCR, diff pixel (Vision/CoreGraphics)."""
+
+from __future__ import annotations
+
+import json
+import struct
+import subprocess
+from pathlib import Path
+
+from . import ocr
+from .config import Config
+from .files import GuardrailError
+from .report import Report
+from .store import sha256_file
+
+
+def png_size(path: Path) -> tuple[int, int] | None:
+    with path.open("rb") as handle:
+        header = handle.read(24)
+    if header[:8] != b"\x89PNG\r\n\x1a\n" or len(header) < 24:
+        return None
+    width, height = struct.unpack(">II", header[16:24])
+    return int(width), int(height)
+
+
+def _lines(report: Report) -> list[str]:
+    blob = (report.details or "") + "\n" + "\n".join(report.findings)
+    return [line.strip() for line in blob.splitlines() if line.strip() and not line.startswith("#")]
+
+
+def pixel_diff(left: Path, right: Path, threshold: float = 0.12) -> dict:
+    binary = ocr._ensure_vision_binary()
+    process = subprocess.run(
+        [str(binary), "diff", str(left), str(right), str(threshold)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    if process.returncode != 0:
+        detail = (process.stderr or process.stdout or "pixel diff failed").strip()[:400]
+        raise GuardrailError(f"pixel diff failed : {detail}")
+    try:
+        payload = json.loads(process.stdout)
+    except json.JSONDecodeError as error:
+        raise GuardrailError("pixel diff returned non-JSON") from error
+    if not isinstance(payload, dict):
+        raise GuardrailError("pixel diff returned an unexpected payload")
+    return payload
+
+
+def compare_images(config: Config, reference: str, current: str, *, client=None) -> Report:
+    left = ocr.resolve_image_path(config, reference)
+    right = ocr.resolve_image_path(config, current)
+    hash_left = sha256_file(left)
+    hash_right = sha256_file(right)
+    findings: list[str] = []
+    evidence: list[dict] = []
+    backend = "hash+ocr"
+    if hash_left == hash_right:
+        findings.append("HIGH: files are byte-identical")
+        summary = "Screenshots are identical (SHA256)."
+    else:
+        findings.append("HIGH: file hashes differ")
+        size_left = png_size(left)
+        size_right = png_size(right)
+        if size_left and size_right and size_left != size_right:
+            findings.append(f"HIGH: dimensions {size_left} vs {size_right}")
+        try:
+            pixels = pixel_diff(left, right)
+            backend = "hash+ocr+pixel"
+            ratio = float(pixels.get("changedRatio") or 0)
+            regions = pixels.get("regions") or []
+            if ratio >= 0.15:
+                findings.append(f"HIGH: pixel change covers {ratio:.0%} of the grid")
+            elif ratio > 0:
+                findings.append(f"MEDIUM: pixel change covers {ratio:.0%} of the grid")
+            else:
+                findings.append("Pixel grid: no cell above threshold")
+            for index, region in enumerate(regions[:5], start=1):
+                box = {
+                    "x": region.get("x"),
+                    "y": region.get("y"),
+                    "width": region.get("width"),
+                    "height": region.get("height"),
+                }
+                evidence.append(
+                    {
+                        "id": f"IMG-E{index}",
+                        "type": "pixel_region",
+                        "content": f"score={region.get('score')}",
+                        "confidence": round(float(region.get("score") or 0), 2),
+                        "box": box,
+                    }
+                )
+        except (GuardrailError, FileNotFoundError) as error:
+            findings.append(f"Pixel diff skipped: {error}")
+        ocr_left = ocr.read_images(config, str(left), None, None, client=client)
+        ocr_right = ocr.read_images(config, str(right), None, None, client=client)
+        set_left = set(_lines(ocr_left))
+        set_right = set(_lines(ocr_right))
+        missing = sorted(set_left - set_right)[:12]
+        added = sorted(set_right - set_left)[:12]
+        if missing:
+            findings.append("MEDIUM: OCR text only in reference: " + " | ".join(missing[:4]))
+        if added:
+            findings.append("MEDIUM: OCR text only in current: " + " | ".join(added[:4]))
+        if not missing and not added:
+            findings.append("Text: identical at OCR granularity")
+        evidence.extend((ocr_left.evidence or [])[:6])
+        evidence.extend((ocr_right.evidence or [])[:6])
+        summary = f"{len(findings)} material differences between {left.name} and {right.name}."
+    source = left.stat().st_size + right.stat().st_size
+    return Report(
+        title="Image compare",
+        summary=summary,
+        findings=findings,
+        files=[str(left), str(right)],
+        evidence=evidence,
+        stats={
+            "backend": backend,
+            "source_caracteres": int(source * 4 / 3),
+            "sha_left": hash_left[:12],
+            "sha_right": hash_right[:12],
+        },
+        next_actions=["Crop a differing region with local_image_crop rather than attaching both screenshots."],
+    )

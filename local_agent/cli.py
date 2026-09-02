@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from . import edit, ocr, tasks
+from . import agent, compare, doctor, edit, ocr, store, tasks
 from .config import get_config
 from .files import GuardrailError
 from .mlx import MlxClient, MlxError
@@ -75,6 +75,27 @@ def build_parser() -> argparse.ArgumentParser:
     crop = subparsers.add_parser("image-crop", help="extrait une région OCR (id rendu par image)")
     crop.add_argument("id", help="identifiant de région, ex. a832b1c4-R1")
 
+    compare_parser = subparsers.add_parser("image-compare", help="compare deux captures (hash + OCR + pixel)")
+    compare_parser.add_argument("reference")
+    compare_parser.add_argument("current")
+
+    task_parser = subparsers.add_parser("task", help="mission locale : sources + boucle d'outils")
+    task_parser.add_argument("task")
+    task_parser.add_argument("--source", action="append", dest="sources")
+    task_parser.add_argument("--path", default=None)
+    task_parser.add_argument("--autonomy", default=None, choices=["read_only", "patch", "safe", "auto"])
+    task_parser.add_argument("--output-budget", type=int, default=None)
+    task_parser.add_argument("--local-context-budget", type=int, default=None)
+    task_parser.add_argument("--risk-level", default=None, choices=["LOW", "MEDIUM", "HIGH"])
+
+    expand = subparsers.add_parser("expand", help="détail d'une preuve (CODE-E12, a832-R1)")
+    expand.add_argument("ids", nargs="+")
+
+    subparsers.add_parser("stats", help="tableau de bord des métriques locales")
+    subparsers.add_parser("doctor", help="diagnostique MCP, MLX, OCR, store")
+    session = subparsers.add_parser("session", help="affiche ou renouvelle l'id de session locale")
+    session.add_argument("--new", action="store_true", help="force a new session id")
+
     return parser
 
 
@@ -137,10 +158,35 @@ def _dispatch(arguments: argparse.Namespace, config, client: MlxClient) -> Repor
         return tasks.diff_review(config, client, scope=arguments.scope, base=arguments.base, task=arguments.task)
     if command == "image":
         paths = list(arguments.paths)
-        return ocr.read_images(config, paths[0], paths[1:] or None, arguments.task)
+        return ocr.read_images(config, paths[0], paths[1:] or None, arguments.task, client=client)
     if command == "image-crop":
         report, _crop = ocr.crop_region(config, arguments.id)
         return report
+    if command == "image-compare":
+        return compare.compare_images(config, arguments.reference, arguments.current, client=client)
+    if command == "task":
+        return agent.run_task(
+            config,
+            client,
+            arguments.task,
+            sources=arguments.sources,
+            path=arguments.path,
+            autonomy=arguments.autonomy,
+            output_budget=arguments.output_budget,
+            local_context_budget=arguments.local_context_budget,
+            risk_level=arguments.risk_level,
+        )
+    if command == "expand":
+        payload = [store.expand(item) for item in arguments.ids]
+        return payload[0] if len(payload) == 1 else payload
+    if command == "stats":
+        return store.Store().session_stats()
+    if command == "session":
+        if arguments.new:
+            return {"session_id": store.new_session()}
+        return {"session_id": store.current_session()}
+    if command == "doctor":
+        return doctor.check(config, client)
     raise ValueError(f"commande inconnue : {command}")
 
 

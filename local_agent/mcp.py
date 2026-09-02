@@ -16,10 +16,10 @@ from .config import Config, get_config
 from .files import GuardrailError, ensure_usable_root
 from .mlx import MlxClient, MlxError
 from .report import Report, clamp, render_markdown
-from . import edit, ocr, shell, tasks
+from . import agent, compare, doctor, edit, ocr, shell, store, tasks
 
 SERVER_NAME = "local-agent"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.2.0"
 DEFAULT_PROTOCOL = "2024-11-05"
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 
@@ -38,6 +38,79 @@ _GLOBS = {
 }
 
 TOOLS: list[dict] = [
+    {
+        "name": "local_task",
+        "description": (
+            "Primary entry: send a mission and sources (repo://, image://, log://, jira://, confluence://, data://). "
+            "The local agent acquires context itself, searches, reads, optionally OCRs, may run "
+            "whitelisted tests, and returns a compact evidence packet. Do not load files into your "
+            "context first. autonomy: read_only (default), patch/safe (propose a patch), auto "
+            "(apply, must be explicit). High-risk or low-confidence work returns status needs_claude. "
+            "Existing tools (local_search, local_image, ...) remain for a single known step."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "Mission in natural language"},
+                "sources": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Pointers such as repo://src, image:///abs/shot.png, jira://LYSI-1, confluence://SPACE/Title",
+                },
+                "path": {"type": "string", "description": "Optional repo-relative focus path"},
+                "autonomy": {
+                    "type": "string",
+                    "enum": ["read_only", "patch", "safe", "auto"],
+                    "description": "read_only default; auto must be explicit",
+                },
+                "output_budget": {"type": "integer", "description": "Max tokens in the local model completion"},
+                "local_context_budget": {"type": "integer", "description": "Max characters kept in the local tool-loop context"},
+                "risk_level": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+                "repo": _REPO,
+            },
+            "required": ["task"],
+        },
+    },
+    {
+        "name": "local_expand",
+        "description": (
+            "Fetch one or more evidence items by id (CODE-E12, E12, IMG-E2, a832b1c4-R1). "
+            "Raw excerpts stay local until you ask. Prefer this over re-reading the file."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Evidence id, e.g. CODE-E12 or a832b1c4-R1"},
+                "ids": {"type": "array", "items": {"type": "string"}},
+                "repo": _REPO,
+            },
+        },
+    },
+    {
+        "name": "local_metrics",
+        "description": (
+            "Session dashboard: local tasks, raw vs Claude-visible tokens, direct context avoided. "
+            "Context exposure avoided is not shown here; that estimate only appears on tool footers "
+            "and is labelled estimate, not billed."
+        ),
+        "inputSchema": {"type": "object", "properties": {"repo": _REPO}},
+    },
+    {
+        "name": "local_image_compare",
+        "description": (
+            "Compare two screenshots without loading either into your context. Hash, dimensions, "
+            "OCR text, then a 24x24 pixel grid diff; returns material differences and region ids to expand."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reference": {"type": "string", "description": "Reference image path"},
+                "current": {"type": "string", "description": "Current image path"},
+                "repo": _REPO,
+            },
+            "required": ["reference", "current"],
+        },
+    },
     {
         "name": "local_search",
         "description": (
@@ -68,7 +141,8 @@ TOOLS: list[dict] = [
             "Modes: inspect (free-form), summarize (role of each file), duplicates (repeated "
             "implementations). Use it for large-tree exploration, multi-file summaries, duplicate "
             "detection and bulk classification. A path that is an image, or a folder of images, is "
-            "OCR'd locally (same as local_image), not sent to the code model. Not for tickets or "
+            "OCR'd locally (same as local_image); if the loaded model has vision, a layout pass "
+            "uses the same weights. Not for tickets or "
             "instructions you must follow verbatim."
         ),
         "inputSchema": {
@@ -166,11 +240,11 @@ TOOLS: list[dict] = [
         "name": "local_image",
         "description": (
             "Extract on-screen text from a screenshot or image without loading the pixels into your "
-            "context and without swapping the local LLM. Uses macOS Vision OCR (Tesseract fallback). "
-            "Pass a filesystem path; absolute paths are allowed because captures rarely live in the "
-            "git repo. One call can take several images. Inventory only: labels, errors, buttons, "
-            "empty states. Not a recette verdict. For layout or colour, crop a region with "
-            "local_image_crop instead of attaching the full screenshot."
+            "context. Uses macOS Vision OCR (Tesseract fallback) first. If the loaded local model "
+            "has vision, a second pass on the same weights fills layout gaps (merged headers, "
+            "selected filters, disabled buttons). Pixels stay local; pass a filesystem path. "
+            "Inventory only: labels, errors, buttons, empty states. Not a recette verdict. "
+            "For colour of one region, crop with local_image_crop instead of attaching the full screenshot."
         ),
         "inputSchema": {
             "type": "object",
@@ -332,10 +406,89 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             "checks_disponibles": checks,
             "ocr": ocr.backend_status(),
             "config": config.as_summary(),
+            "metrics": store.Store().session_stats(),
         }
         return ToolResult(text=json.dumps(payload, ensure_ascii=False, indent=2))
 
-    if name == "local_search":
+    if name == "local_task":
+        report = agent.run_task(
+            config,
+            client,
+            str(arguments["task"]),
+            sources=arguments.get("sources"),
+            path=arguments.get("path"),
+            autonomy=arguments.get("autonomy"),
+            output_budget=arguments.get("output_budget"),
+            local_context_budget=arguments.get("local_context_budget"),
+            risk_level=arguments.get("risk_level"),
+        )
+    elif name == "local_expand":
+        ids: list[str] = []
+        if arguments.get("id"):
+            ids.append(str(arguments["id"]))
+        ids.extend(str(item) for item in (arguments.get("ids") or []) if str(item).strip())
+        if not ids:
+            raise ValueError("id or ids is required")
+        chunks = []
+        media = []
+        source_chars = 0
+        db = store.Store()
+        for identifier in ids[:8]:
+            try:
+                if "-R" in identifier.upper():
+                    crop_report, crop_path = ocr.crop_region(config, identifier)
+                    chunks.append(render_markdown(crop_report, ocr.image_config(config)))
+                    source_chars += int(crop_report.stats.get("source_caracteres") or 0)
+                    size = crop_path.stat().st_size
+                    if 0 < size <= ocr.MAX_EMBED_BYTES:
+                        media.append(
+                            {
+                                "type": "image",
+                                "mimeType": "image/png",
+                                "data": base64.standard_b64encode(crop_path.read_bytes()).decode("ascii"),
+                            }
+                        )
+                else:
+                    payload = store.expand(identifier, db)
+                    chunks.append(json.dumps(payload, ensure_ascii=False, indent=2))
+                    source_chars += len(json.dumps(payload.get("payload") or {}))
+            except (GuardrailError, ValueError) as error:
+                chunks.append(f"{identifier}: {error}")
+        text = "\n\n".join(chunks)
+        result = ToolResult(text=text, saved=max(0, source_chars - len(text)), source_chars=source_chars, media=media)
+        return result
+    elif name == "local_metrics":
+        stats = store.Store().session_stats()
+        lines = [
+            "LOCAL-AGENT SESSION",
+            f"Session                           {stats.get('session_id', '')}",
+            "",
+            f"Local tasks                       {stats['local_tasks']}",
+            f"Completed without Claude          {stats['completed_without_claude']}",
+            f"Escalated                          {stats['escalated']}",
+            "",
+            f"Local tool calls                  {stats['tool_calls']}",
+            f"Local LLM in/out tokens           {stats.get('local_llm_in', 0)}/{stats.get('local_llm_out', 0)}",
+            f"Cache hits                        {stats.get('cache_hits', 0)}",
+            "",
+            f"Raw context intercepted           {stats['raw_tokens']}",
+            f"Claude-visible context            {stats['visible_tokens']}",
+            f"Direct context avoided            {stats['avoided_tokens']}",
+            f"Average packet tokens             {stats.get('avg_packet_tokens', 0)}",
+            "",
+            "By source:",
+        ]
+        for key, value in sorted((stats.get("by_source") or {}).items()):
+            lines.append(f"  {key:16} {value}")
+        lines += ["", f"Average latency s                 {stats['avg_latency_s']}", "", "No billed Claude tokens are claimed."]
+        text = "\n".join(lines)
+        return ToolResult(text=text)
+    elif name == "local_image_compare":
+        report = compare.compare_images(
+            config, str(arguments["reference"]), str(arguments["current"]), client=client
+        )
+        return _result_from_report(report, ocr.image_config(config))
+    elif name == "local_search":
         report = tasks.search(
             config, client, str(arguments["query"]), arguments.get("path"), arguments.get("globs")
         )
@@ -404,6 +557,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             arguments.get("path"),
             arguments.get("paths"),
             arguments.get("task"),
+            client=client,
         )
         return _result_from_report(report, ocr.image_config(config))
     elif name == "local_image_crop":

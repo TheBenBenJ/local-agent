@@ -32,6 +32,16 @@
       "nom": "analyse : module de fichiers",
       "agent": ["summarize", "local_agent/files.py"],
       "baseline": {"type": "tree", "path": "local_agent/files.py"}
+    },
+    {
+      "nom": "logs : fixture 1 Mo",
+      "agent": ["logs", "var/bench.log"],
+      "baseline": {"type": "log", "path": "var/bench.log"}
+    },
+    {
+      "nom": "local_task : classe Store",
+      "agent": ["task", "Where is class Store defined?", "--source", "repo://local_agent", "--autonomy", "read_only"],
+      "baseline": {"type": "grep", "patterns": ["class Store"], "path": "local_agent"}
     }
   ],
   "sonde": {
@@ -41,6 +51,8 @@
     ],
     "full": [
       {"outil": "local_ping", "arguments": {}},
+      {"outil": "local_metrics", "arguments": {}},
+      {"outil": "local_task", "arguments": {"task": "Where is class Store defined?", "sources": ["repo://local_agent"], "autonomy": "read_only"}},
       {"outil": "local_search", "arguments": {"query": "comment le serveur MCP répond-il à tools/list ?", "path": "local_agent"}},
       {"outil": "local_review", "arguments": {"path": "local_agent/budget.py"}},
       {"outil": "local_analyze", "arguments": {"path": "local_agent/report.py", "mode": "summarize"}},

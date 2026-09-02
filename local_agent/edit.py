@@ -62,6 +62,11 @@ def apply_patch(config: Config, patch_id: str) -> Report:
     bundle_path = PATCH_DIR / f"{patch_id}.json"
     if not bundle_path.is_file():
         raise ValueError(f"unknown proposal: {patch_id}. Run a propose pass again.")
+    age = time.time() - bundle_path.stat().st_mtime
+    if age > PATCH_RETENTION_SECONDS:
+        raise ValueError(
+            f"proposal {patch_id} expired ({int(age)}s old, max {PATCH_RETENTION_SECONDS}s). Run a propose pass again."
+        )
     payload = json.loads(bundle_path.read_text(encoding="utf-8"))
     body = json.dumps(payload["files"], ensure_ascii=False, sort_keys=True)
     if _sha256(body) != payload["integrity"]:

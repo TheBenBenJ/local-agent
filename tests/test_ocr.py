@@ -134,6 +134,7 @@ def main() -> None:
         check("détail contient le texte lu", "Type d'envoi" in report.details)
         check("paquet de preuves non vide", bool(report.evidence))
         check("région saillante en premier", report.evidence[0]["salient"] is True)
+        check("sans client, pas de passe vision", report.stats.get("vision") == "unavailable")
 
     tests_dir = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(dir=str(tests_dir)) as raw:
@@ -152,6 +153,7 @@ def main() -> None:
         routed = analyze(config, Boom(), relative, task="filtre")
         check("local_analyze d'un png bascule sur l'OCR", routed.title.startswith("Image text"))
         check("local_analyze n'appelle pas le 35B", routed.stats.get("backend") in {"macos-vision", "tesseract"})
+        check("Boom n'a pas la vision, pas d'appel modèle", routed.stats.get("vision") == "unavailable")
 
     check("parse a832-R1", parse_region_id("a832b1c4-R1") == ("a832b1c4", "R1"))
     check("parse image://", parse_region_id("image://a832b1c4/R2") == ("a832b1c4", "R2"))

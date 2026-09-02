@@ -1,4 +1,4 @@
-"""OCR local d'une capture : Vision (macOS) ou Tesseract, jamais un LLM."""
+"""OCR local d'une capture : Vision (macOS) ou Tesseract. La passe layout est dans vision.py."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from . import evidence, grid
+from . import evidence, grid, vision
 from .config import Config
 from .files import (
     DENIED_DIRECTORIES,
@@ -387,6 +387,7 @@ def read_images(
     task: str | None = None,
     *,
     runner: OcrRunner | None = None,
+    client: object | None = None,
 ) -> Report:
     resolved = [resolve_image_path(config, item) for item in collect_paths(path, paths)]
     if runner is not None:
@@ -399,6 +400,7 @@ def read_images(
     details_parts: list[str] = []
     errors: list[str] = []
     evidence_items: list[dict] = []
+    pages: list[dict] = []
     line_count = 0
     table_count = 0
     needle = (task or "").strip().lower()
@@ -428,6 +430,16 @@ def read_images(
             },
         )
         evidence_items.extend(regions)
+        excerpt = grid.render_markdown_table(table) if table else "\n".join(rows)
+        pages.append(
+            {
+                "path": file_path,
+                "image_id": image_id,
+                "label": label,
+                "table": table,
+                "excerpt": excerpt,
+            }
+        )
         if error:
             errors.append(f"{label}: {error}")
         if not rows:
@@ -462,7 +474,7 @@ def read_images(
         "matters; do not attach the full screenshot."
     )
     source_chars = sum(int(item.stat().st_size * 4 / 3) for item in resolved)
-    return Report(
+    report = Report(
         title="Image text (OCR)",
         summary=summary,
         findings=findings,
@@ -483,6 +495,7 @@ def read_images(
         errors=errors,
         details="\n\n".join(details_parts),
     )
+    return vision.enrich(config, client, report, pages, task)
 
 
 def crop_region(config: Config, raw_id: str) -> tuple[Report, Path]:

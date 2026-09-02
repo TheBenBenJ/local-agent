@@ -105,7 +105,26 @@ def render_markdown(report: Report, config: Config) -> str:
 
 
 def render_json(report: Report, config: Config) -> str:
-    return clamp(json.dumps(report.to_dict(), ensure_ascii=False, indent=2), config)
+    payload = report.to_dict()
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    limit = config.max_output_chars
+    if len(text) <= limit:
+        return text
+    evidence = list(payload.get("evidence") or [])
+    while len(text) > limit and evidence:
+        evidence.pop()
+        payload["evidence"] = evidence
+        stats = dict(payload.get("stats") or {})
+        stats["evidence_truncated"] = True
+        payload["stats"] = stats
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if len(text) > limit:
+        payload["findings"] = (payload.get("findings") or [])[:3]
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if len(text) > limit:
+        payload["summary"] = str(payload.get("summary") or "")[: max(400, limit // 3)]
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+    return text
 
 
 def clamp(text: str, config: Config) -> str:

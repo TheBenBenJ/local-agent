@@ -4,12 +4,26 @@
 
 Couche locale de réduction de contexte pour un agent de code (Claude Code, Cursor, tout client MCP).
 L'orchestrateur envoie une intention et un chemin. Le brut reste sur la machine : `ripgrep`, git, OCR
-Apple Vision, agrégats. Claude reçoit un paquet de preuves (500 à 3 000 tokens) avec des ids pour
-demander le détail. Ce n'est pas un délégué LLM : le modèle local (mlx-serve) ne sert que le **code**.
-Les captures passent par Vision, sans swap du 35B, sans VLM.
+Apple Vision, agrégats, et le modèle local déjà chargé. Claude reçoit un paquet de preuves (500 à
+3 000 tokens) avec des ids pour demander le détail.
 
-Règle : Claude ne reçoit jamais le document brut par défaut. D'abord un index avec des pointeurs,
-ensuite un drill-down précis (`local_image_crop`, un fichier, un extrait).
+Un seul checkpoint côté mlx-serve : `mlx-community/Qwen3.6-35B-A3B-4bit` (MoE ~20 Go, **texte +
+vision**). Code, logs et captures passent par les mêmes poids. Les captures : OCR Vision d'abord
+(verbatim, pas d'hallucination), puis le même modèle en vision seulement si la grille a un trou
+(en-tête fusionné, filtre, bouton disabled). Jamais un second 8B, jamais de swap. Les pixels ne
+quittent pas la machine.
+
+Règle : Claude ne reçoit jamais le document brut par défaut. Il envoie une **mission + des
+sources** (`repo://`, `image://`, `log://`). `local_task` acquiert le contexte, boucle sur des
+outils déterministes, et rend un paquet de preuves. Drill-down ensuite (`local_expand`,
+`local_image_crop`).
+
+Les outils fins (`local_search`, `local_image`, `local_fix`, …) restent pour un pas unique déjà
+identifié. Ne pas déléguer 20 lignes déjà chargées.
+
+**Positionnement.** Pas « encore un MCP pour un LLM local ». Le local n'est pas alimenté avec le
+contexte de Claude : il lit le dépôt lui-même. Différence avec Houtini, delegate-local et assimilés :
+Claude donne une mission, pas des fichiers déjà lus.
 
 ![Architecture hybride : l'orchestrateur envoie tâche et chemin, local-agent explore le dépôt et ne renvoie qu'un résumé compact](docs/architecture.jpg)
 
@@ -81,12 +95,15 @@ identique :
 
 | Modèle                               | Exactitude | Banc de 15 tours | Observation                                        |
 | ------------------------------------ | ---------- | ---------------- | -------------------------------------------------- |
-| Qwen3.6-35B-A3B 4-bit (20 Go)        | 15/15      | 43 s             | Motifs dérivés plus sélectifs, réponses plus courtes |
-| Ornith-1.5-35B-A3B 4-bit (19,5 Go)   | 14/15      | 98 s             | Modèle « reasoning », plus lent, moins déterministe  |
+| Qwen3.6-35B-A3B 4-bit (20 Go)        | 15/15      | 43 s             | Motifs plus sélectifs, réponses plus courtes. Même checkpoint : vision. |
+| Ornith-1.5-35B-A3B 4-bit (19,5 Go)   | 14/15      | 98 s             | Modèle « reasoning », plus lent, moins déterministe, texte seul          |
 
-Un modèle MoE non-reasoning d'environ 20 Go est le bon profil : les tâches du local-agent sont de la
-synthèse encadrée, la réflexion préalable coûte des secondes sans gagner en justesse. Avec `mlx-serve`,
-permuter se fait sans redémarrage : `POST /v1/unload-model` puis `POST /v1/load-model {"model": "..."}`.
+Le bon profil : un MoE non-reasoning d'environ 20 Go **avec vision**. Les tâches code sont de la
+synthèse encadrée ; la vision ne s'ajoute pas par un second modèle, elle est déjà dans Qwen3.6.
+Ornith est plus lent et moins juste. Gemma-4-26B a aussi la vision mais oblige à décharger le 35B.
+Avec `mlx-serve`, permuter se fait sans redémarrage :
+`POST /v1/unload-model` puis `POST /v1/load-model {"model": "mlx-community/Qwen3.6-35B-A3B-4bit"}`.
+`local_ping` expose `vision: true` quand le modèle chargé déclare `image` dans `input_modalities`.
 
 ## Language
 
@@ -118,13 +135,17 @@ Redémarrer le client après toute modification de ces fichiers.
 
 | Outil MCP            | Rôle                                                        | Paramètres                                            |
 | -------------------- | ----------------------------------------------------------- | ----------------------------------------------------- |
+| `local_task`         | Mission + sources, boucle locale, paquet de preuves     | `task`, `sources`, `autonomy`, `output_budget`, `local_context_budget` |
+| `local_expand`       | Détail d'une preuve (`CODE-E12`, `E12`, `a832-R1`)      | `id` / `ids`                                            |
+| `local_metrics`      | Tableau de bord mesurable (pas de billed Claude)        | aucun                                                   |
+| `local_image_compare`| Diff de deux captures (hash + OCR + pixel)              | `reference`, `current`                                  |
 | `local_search`       | Localiser du code à partir d'une question                    | `query`, `path`, `globs`                               |
 | `local_analyze`      | Analyse libre, résumé de fichiers, détection de doublons      | `path`, `task`, `mode`, `globs`, `max_files`           |
 | `local_review`       | Première passe de revue de code                              | `path`, `task`, `globs`                                |
 | `local_fix`          | Modification mécanique, transactionnelle par défaut           | `path`, `task`, `mode`, `patch_id`, `globs`, `allow_dirty` |
 | `local_test_analysis`| Contrôle projet filtré et synthétisé                         | `kind`, `target`, `filter`                             |
 | `local_log_analysis` | Analyse de logs volumineux                                   | `path`, `task`, `patterns`                             |
-| `local_image`        | OCR d'une capture → paquet de preuves (Vision, pas de LLM)    | `path`, `paths`, `task`                                 |
+| `local_image`        | OCR puis, si le modèle chargé a la vision, passe layout | `path`, `paths`, `task`                                 |
 | `local_image_crop`   | Crop d'une région (`a832-R1`), sans la capture complète       | `id`                                                    |
 | `local_diff_review`  | Revue d'un diff git avec message de commit proposé            | `scope`, `base`, `task`                                |
 | `local_ping`         | Diagnostic : connexion, racine, contrôles disponibles, config | aucun                                                  |
@@ -159,14 +180,25 @@ appel vaut plus en début de session qu'à la fin. Cumuls dans `~/.local-agent/u
 
 `local_image` lit le fichier, rend le texte verbatim et des ids de régions. Un tableau (Excel,
 DataTable) est reconstruit en grille à partir des boîtes, sans modèle : les lettres de colonnes
-sont écartées, `#DIV/O!` redevient `#DIV/0!`. `local_image_crop` sort un PNG de la zone utile.
-Pas de VLM. Un chemin absolu hors git est accepté.
+sont écartées, `#DIV/O!` redevient `#DIV/0!`. Si le modèle chargé a la vision **et** que la grille
+a un trou (en-tête vide, formulaire, tâche layout/filtre/bouton), le même checkpoint reçoit le
+**chemin fichier** (jamais de base64, bug connu Qwen3.x / mlx-vlm) et rend des notes UI. Les
+chiffres OCR restent la source de vérité. `local_image_crop` sort un PNG de la zone utile.
+`local_task` rend un paquet borné : STATUS, CONFIDENCE (HIGH/MEDIUM/LOW, heuristique), RISK,
+ROOT CAUSE, fichiers, emplacements, ids `CODE-E` / `IMG-E` / `LOG-E`. Drill-down : `local_expand`.
 
 ## Utilisation en ligne de commande
 
 ```bash
 ~/.local-agent/bin/local-agent ping
+~/.local-agent/bin/local-agent doctor
+~/.local-agent/bin/local-agent stats
 ~/.local-agent/bin/local-agent config
+
+~/.local-agent/bin/local-agent task "Where is the evidence Store class?" --source repo://local_agent
+~/.local-agent/bin/local-agent expand CODE-E1
+~/.local-agent/bin/local-agent session --new
+~/.local-agent/bin/local-agent image-compare avant.png apres.png
 
 ~/.local-agent/bin/local-agent search "où est implémentée l'authentification ?" --path src
 ~/.local-agent/bin/local-agent review src/Api/Service
@@ -219,9 +251,18 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 | `LOCAL_AGENT_FIX_MAX_FILE_SIZE` | `40000`                      | Au-delà, un fichier n'est pas réécrit                        |
 | `LOCAL_AGENT_COMMAND_TIMEOUT`   | `900`                        | Timeout des contrôles projet                                 |
 | `LOCAL_AGENT_COMPOUND_TURNS`    | `25`                         | Facteur de tours restants pour l'effet facturé (one-shot × N) |
+| `LOCAL_AGENT_LOCAL_CONTEXT_BUDGET` | `48000` | Taille max du contexte de la boucle d'outils |
+| `LOCAL_AGENT_MAX_RETRIES` | `2` | Erreurs d'outil consécutives avant `needs_claude` |
 | `LOCAL_AGENT_REPO_ROOT`         | racine du dépôt              | Surcharge de la racine, utile pour les tests                  |
 
 Les anciens noms `MLX_*` restent lus en rétrocompatibilité quand la variante `LOCAL_LLM_*` est absente.
+
+Jira : `local_task` avec `jira://LYSI-1234` lit le ticket. Confluence Cloud : `confluence://123456`
+ou `confluence://SPACE/Title` (même jeton Atlassian que Jira). Les identifiants ne sont pas dans
+local-agent. Ils viennent du `.claude/.env.local` du dépôt visé (`JIRA_URL`, `JIRA_USERNAME`,
+`JIRA_API_TOKEN`, le format déjà utilisé par les skills lysi), ou de `JIRA_BASE_URL` /
+`JIRA_TOKEN` / `JIRA_EMAIL` dans l'environnement. Le jeton ne figure pas dans `doctor` ni dans
+les rapports.
 
 ## Contrôles projet par dépôt
 
@@ -278,10 +319,19 @@ local_agent/
 ├── tasks.py     search, analyze, logs, check, diff_review
 ├── grid.py      reconstruction de tableau depuis les boîtes OCR, sans LLM
 ├── evidence.py  cache des paquets de preuves (ids, expiration 7 jours)
-├── ocr.py       OCR et crop d'une capture (Vision / Tesseract, sans LLM)
+├── ocr.py       OCR et crop d'une capture (Vision / Tesseract)
+├── vision.py    seconde passe layout si le modèle chargé a `vision`
 ├── ocr_vision.swift  binaire Vision compilé à la demande dans var/local-ocr
 ├── edit.py      propositions transactionnelles et réécriture sous contrôle git
 ├── report.py    rapport compact et clamp de sortie
+├── agent.py     boucle local_task, budgets, détection de boucle, escalation
+├── agent_tools.py  outils déterministes du modèle local (rg, git, checks, OCR)
+├── store.py     SQLite : preuves, cache SHA256, métriques
+├── gateway.py   parse repo:// image:// jira:// …
+├── risk.py      autonomie et heuristique d'escalade
+├── compare.py   diff de captures (hash + OCR + pixel)
+├── doctor.py    diagnostic runtime
+├── providers/   jira/confluence (`.claude/.env.local` du dépôt visé), rules, data
 ├── cli.py       interface en ligne de commande
 └── mcp.py       serveur MCP stdio (JSON-RPC 2.0, sans dépendance)
 ```

@@ -662,7 +662,7 @@ def analyze(
         images = ocr.list_image_files(config, target, globs=globs, max_files=max_files)
         if images:
             extra = [str(item) for item in images[1:]]
-            return ocr.read_images(config, str(images[0]), extra or None, task)
+            return ocr.read_images(config, str(images[0]), extra or None, task, client=client)
         return Report(
             title=f"Local analysis ({mode})",
             summary=f"No analysable file under {path or '.'} after applying guardrails.",

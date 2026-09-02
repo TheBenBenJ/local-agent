@@ -18,3 +18,5 @@ usage.jsonl
 usage-totals.json
 patches/
 evidence/
+context.db
+session.id

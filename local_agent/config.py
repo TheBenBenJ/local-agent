@@ -79,6 +79,21 @@ def _str_env(name: str, default: str) -> str:
     return _raw_env(name, name.replace("LOCAL_LLM_", "MLX_")) or default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _first_bool(*names: str, default: bool) -> bool:
+    for name in names:
+        raw = (os.environ.get(name) or "").strip().lower()
+        if raw:
+            return raw not in {"0", "false", "no", "off"}
+    return default
+
+
 @dataclass
 class Config:
     repo_root: Path = field(default_factory=_repo_root)
@@ -108,6 +123,24 @@ class Config:
     compound_turns: int = field(
         default_factory=lambda: _int_env("LOCAL_AGENT_COMPOUND_TURNS", 25)
     )
+    vision: bool = field(
+        default_factory=lambda: _first_bool("LOCAL_AGENT_ENABLE_VISION", "LOCAL_AGENT_VISION", default=True)
+    )
+    provider: str = field(default_factory=lambda: _str_env("LOCAL_LLM_PROVIDER", "mlx"))
+    max_context: int = field(default_factory=lambda: _int_env("LOCAL_LLM_MAX_CONTEXT", 0))
+    max_steps: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_STEPS", 12))
+    max_tool_calls: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_TOOL_CALLS", 24))
+    max_runtime: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_RUNTIME", 180))
+    output_budget: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_OUTPUT_BUDGET", 1500))
+    local_context_budget: int = field(
+        default_factory=lambda: _int_env("LOCAL_AGENT_LOCAL_CONTEXT_BUDGET", 48_000)
+    )
+    autonomy: str = field(default_factory=lambda: _str_env("LOCAL_AGENT_AUTONOMY", "read_only"))
+    confidence_threshold: float = field(
+        default_factory=lambda: _float_env("LOCAL_AGENT_CONFIDENCE_THRESHOLD", 0.7)
+    )
+    enable_cache: bool = field(default_factory=lambda: _bool_env("LOCAL_AGENT_ENABLE_CACHE", True))
+    max_retries: int = field(default_factory=lambda: _int_env("LOCAL_AGENT_MAX_RETRIES", 2))
 
     @property
     def max_output_chars(self) -> int:
@@ -125,6 +158,17 @@ class Config:
             "max_output_tokens": self.max_output_tokens,
             "chunk_chars": self.chunk_chars,
             "compound_turns": self.compound_turns,
+            "vision": self.vision,
+            "provider": self.provider,
+            "max_steps": self.max_steps,
+            "max_tool_calls": self.max_tool_calls,
+            "max_runtime": self.max_runtime,
+            "output_budget": self.output_budget,
+            "local_context_budget": self.local_context_budget,
+            "autonomy": self.autonomy,
+            "confidence_threshold": self.confidence_threshold,
+            "max_retries": self.max_retries,
+            "enable_cache": self.enable_cache,
             "api_key_set": bool(self.api_key),
         }
 

@@ -23,8 +23,23 @@ import sys
 import time
 from pathlib import Path
 
-AGENT = str(Path.home() / ".local-agent" / "bin" / "local-agent")
-DEFAULT_CASES = Path(__file__).resolve().parent / "cases.json"
+TOOL_ROOT = Path(__file__).resolve().parent.parent
+AGENT = str(TOOL_ROOT / "bin" / "local-agent")
+DEFAULT_CASES = TOOL_ROOT / "tests" / "cases.json"
+
+
+def ensure_bench_log(repo: Path) -> Path:
+    """Génère un log >1 Mo dans var/ (gitignore) pour le cas de compression, sans le versionner."""
+    path = repo / "var" / "bench.log"
+    if path.is_file() and path.stat().st_size >= 1_000_000:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for index in range(25_000):
+            handle.write(f"2026-09-02 INFO worker={index} {'x' * 60}\n")
+            if index % 400 == 0:
+                handle.write(f"2026-09-02 ERROR Uncaught Exception at line {index}\n")
+    return path
 
 
 def run(command: list[str], cwd: Path, timeout: int = 900) -> tuple[str, float, int]:
@@ -115,6 +130,7 @@ def main() -> int:
     options = parser.parse_args()
 
     repo = Path(options.repo).resolve()
+    ensure_bench_log(repo)
     cases = json.loads(Path(options.cases).read_text())["volume"]
 
     results = []
