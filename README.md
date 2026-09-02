@@ -1,16 +1,12 @@
 # local-agent
 
-**Keep large context local. Send Claude only what matters.**
-
-Local context optimization for AI coding agents.
+![Keep large context local. Send Claude only what matters.](docs/architecture.jpg)
 
 Give the local runtime the source, not Claude's context window. Local tools and a small local model process large external context before Claude sees it.
 
 > Local-first does not mean LLM-first.
 
 Use the cheapest reliable layer that can solve the task. local-agent is a niche but useful context optimization layer for context-heavy AI coding workflows. It does not replace Claude.
-
-![local-agent: the orchestrator sends source references, a deterministic router picks DIRECT / REDUCE / AGENT / CLAUDE, and Claude receives a high-signal evidence packet](docs/architecture.jpg)
 
 ## Why
 
