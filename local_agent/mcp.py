@@ -161,8 +161,10 @@ TOOLS: list[dict] = [
         "description": (
             "Passe en revue un diff git sans le charger dans ton contexte : le modèle local lit le diff, "
             "signale bugs probables, restes de débogage et risques de régression, et propose un message de "
-            "commit. Périmètres : worktree (tout le non committé), staged (l'index), branch (écart avec la "
-            "branche de base). À privilégier dès qu'un diff dépasse quelques dizaines de lignes."
+            "commit. Les appels ajoutés sont vérifiés dans le dépôt : une méthode déjà définie ailleurs "
+            "n'est pas signalée comme manquante. Périmètres : worktree (tout le non committé), staged "
+            "(l'index), branch (écart avec la branche de base). À privilégier dès qu'un diff dépasse "
+            "quelques dizaines de lignes."
         ),
         "inputSchema": {
             "type": "object",

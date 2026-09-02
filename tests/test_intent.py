@@ -66,6 +66,56 @@ def main() -> None:
 
     print("tous les contrôles d'absence passent")
 
+    from local_agent.tasks import (
+        _calls_in_added_lines,
+        _downgrade_known_symbols,
+        _resolve_diff_symbols,
+    )
+    from local_agent.config import get_config
+
+    diff = """\
+diff --git a/src/Foo.php b/src/Foo.php
+--- a/src/Foo.php
++++ b/src/Foo.php
+@@ -10,6 +10,8 @@
++        $total = $fiche->getTotalHeuresSup();
++        $this->add($total);
++        public function nouveauHelper(): void
++        {
++            $this->nouveauHelper();
++        }
+"""
+    calls = _calls_in_added_lines(diff)
+    check("extrait l'appel métier", "getTotalHeuresSup" in calls)
+    check("ignore add générique", "add" not in calls)
+    check("ignore l'appel d'une méthode définie dans le même diff", "nouveauHelper" not in calls)
+
+    demoted = _downgrade_known_symbols(
+        Report(
+            title="Revue",
+            summary="ok",
+            risks=["getTotalHeuresSup n'existe pas sur FichePaie"],
+        ),
+        {"getTotalHeuresSup": "src/Entity/Paie/FichePaie.php:787"},
+    )
+    check("retire le risque infirme", demoted.risks == [])
+    check("le bascule en constat vérifié", any("FichePaie.php:787" in item for item in demoted.findings))
+
+    kept = _downgrade_known_symbols(
+        Report(title="Revue", risks=["double comptage possible ligne 298"]),
+        {"getTotalHeuresSup": "src/Entity/Paie/FichePaie.php:787"},
+    )
+    check("laisse un risque sans allégation d'absence", kept.risks == ["double comptage possible ligne 298"])
+
+    resolved = _resolve_diff_symbols(
+        get_config(),
+        ["_log_usage", "fonctionInconnueXYZ"],
+    )
+    check("résout _log_usage dans le dépôt", "_log_usage" in resolved and "mcp.py" in resolved["_log_usage"])
+    check("n'invente pas une définition absente", "fonctionInconnueXYZ" not in resolved)
+
+    print("tous les contrôles de revue de diff passent")
+
 
 if __name__ == "__main__":
     main()

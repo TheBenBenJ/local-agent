@@ -950,6 +950,71 @@ def _split_diff_by_file(diff: str) -> list[tuple[str, str]]:
     return sections
 
 
+_ADDED_CALL = re.compile(r"^\+[^+].*?(?:->|::|\.)(\w{4,})\s*\(", re.MULTILINE)
+_DIFF_DEFINED = re.compile(r"(?:function|def|fn)\s+(\w{4,})\s*\(")
+_GENERIC_CALLS = {
+    "add", "get", "set", "has", "is", "count", "push", "pop", "map", "filter", "reduce",
+    "find", "append", "extend", "update", "write", "read", "load", "save", "render",
+    "create", "delete", "remove", "clear", "reset", "flush", "persist", "findAll",
+    "findBy", "findOneBy", "toArray", "toString", "format", "replace", "split",
+}
+_MISSING_CLAIM = re.compile(
+    r"(?i)("
+    r"n['’]existe pas|introuvable|undefined|does not exist|n['’]est pas défini"
+    r"|manquant[e]?|missing|inconnu[e]?|pas définie?"
+    r")"
+)
+
+
+def _calls_in_added_lines(diff: str) -> list[str]:
+    """Appels ajoutés dans le diff, hors méthodes trop génériques et hors définitions du même patch."""
+    defined = set(_DIFF_DEFINED.findall(diff))
+    found: list[str] = []
+    for name in _ADDED_CALL.findall(diff):
+        if name in defined or name in _GENERIC_CALLS or name.startswith("__") or name in found:
+            continue
+        found.append(name)
+        if len(found) >= 12:
+            break
+    return found
+
+
+def _resolve_diff_symbols(config: Config, names: list[str]) -> dict[str, str]:
+    """Un appel dans le diff n'est pas une méthode nouvelle : on vérifie sa définition dans le dépôt."""
+    resolved: dict[str, str] = {}
+    for name in names:
+        pattern = rf"(?:function|def|fn)\s+{re.escape(name)}\s*\("
+        matches, _ = grep(
+            config,
+            config.repo_root,
+            [pattern],
+            ignore_case=False,
+            max_matches=3,
+            max_count_per_file=1,
+        )
+        if matches:
+            hit = matches[0]
+            resolved[name] = f"{hit['file']}:{hit['line']}"
+    return resolved
+
+
+def _downgrade_known_symbols(report: Report, resolved: dict[str, str]) -> Report:
+    """Observé : la revue signalait getTotalHeuresSup comme manquant, alors qu'il était à FichePaie.php:787."""
+    if not resolved:
+        return report
+    kept: list[str] = []
+    for risk in report.risks:
+        hit = next((name for name in resolved if name in risk), None)
+        if hit and _MISSING_CLAIM.search(risk):
+            note = f"Vérifié : {hit} est défini ({resolved[hit]}), pas une méthode nouvelle."
+            if note not in report.findings:
+                report.findings.append(note)
+            continue
+        kept.append(risk)
+    report.risks = kept
+    return report
+
+
 def diff_review(
     config: Config,
     client: MlxClient,
@@ -1005,12 +1070,24 @@ def diff_review(
             "incohérences avec le code environnant visible dans le diff, risques de régression. "
             "Ignore le style cosmétique."
         )
-    ) + " Ajoute en dernière ligne de next_actions une proposition de message de commit préfixée « Commit : »."
+    ) + (
+        " Ajoute en dernière ligne de next_actions une proposition de message de commit préfixée « Commit : »."
+        " Une seconde boucle n'est pas un double traitement si une garde du diff exclut déjà les éléments vus."
+    )
+    resolved = _resolve_diff_symbols(config, _calls_in_added_lines(diff))
+    known = ""
+    if resolved:
+        listing = "\n".join(f"- {name} : {place}" for name, place in resolved.items())
+        known = (
+            "\n\nSymboles appelés dans le diff, déjà définis ailleurs dans le dépôt "
+            "(ne pas les signaler comme manquants) :\n" + listing + "\n"
+        )
     prompt = (
         f"Consigne : {instruction}\n\n"
         f"Diff git ({scope}, {len(sections)} fichiers) :\n\n"
         + "".join(packed)
-        + "\n\n" + prompts.JSON_CONTRACT
+        + known
+        + "\n" + prompts.JSON_CONTRACT
     )
     payload = _ask(client, prompts.SYSTEM_ANALYST, prompt)
     report = _payload_to_report(
@@ -1018,6 +1095,7 @@ def diff_review(
         payload,
         stats={"files": len(sections), "files_reviewed": len(packed), "source_caracteres": len(diff)},
     )
+    report = _downgrade_known_symbols(report, resolved)
     report = _reconcile_absence(_verify_paths(report, {name for name, _ in sections}, config))
     return _flag_partial_sample(
         report,
