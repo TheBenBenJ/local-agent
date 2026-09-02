@@ -241,6 +241,10 @@ def _derive_patterns(client: MlxClient, query: str, flavor: str, avoid: list[str
         "Contraintes : exactement 3 à 5 motifs, chacun tenant en un mot ou une expression courte, un seul "
         "concept par motif, jamais deux notions collées dans le même motif, sans variantes spéculatives ni "
         "énumération de synonymes.\n"
+        "Si la question nomme déjà un type (classe, service, trait) et demande ce qu'il fait, cherche les "
+        "usages et le vocabulaire de l'action (champs, assignations, appels). N'émets jamais de motif de "
+        "déclaration (`class Nom`, `trait Nom`, `function Nom`) : ça ne sert que si la question demande "
+        "où le symbole est défini.\n"
         + avoid_hint
         + f"Question : {query}\n\n"
         'Réponds uniquement par {"patterns": ["...", "..."]}'
@@ -300,10 +304,29 @@ def _salient_terms(query: str) -> list[str]:
 # « comment » et « pourquoi » demandent une explication, que des lignes brutes ne donnent pas.
 _ENUMERATION = re.compile(r"\b(quels?|quelles?|o[uù]|listez?|combien|which|where|list)\b", re.IGNORECASE)
 _EXPLANATION = re.compile(r"\b(comment|pourquoi|how|why)\b", re.IGNORECASE)
+# Verbes d'action : la question porte sur ce qu'un type FAIT, pas sur sa déclaration.
+_USAGE_INTENT = re.compile(
+    r"\b("
+    r"écrit|ecrit|assigne|calcule|appelle|utilise|modifie|remplit|force|"
+    r"envoie|pose|fixe|renseigne|hydrate|alimente|persiste|"
+    r"write|assign|call|fill|update|persist|save|send|"
+    r"champs?|fields?"
+    r")",
+    re.IGNORECASE,
+)
+_NAMED_TYPE_DECL = re.compile(
+    r"(?:class|trait|interface|enum)\s+[A-Z_]\w*",
+    re.IGNORECASE,
+)
 
 
 def _is_enumeration(query: str) -> bool:
     return bool(_ENUMERATION.search(query)) and not _EXPLANATION.search(query)
+
+
+def _is_usage_query(query: str) -> bool:
+    """« Où PaieService écrit les champs H+ » n'est pas une énumération de symboles."""
+    return bool(_USAGE_INTENT.search(query))
 
 
 def _anchored_variants(term: str) -> list[str]:
@@ -387,10 +410,13 @@ def _select_patterns(
     ils en recopient les mots, et leurs correspondances ne doivent jamais être rendues comme une réponse.
     """
     salient = _salient_terms(query)
+    usage = _is_usage_query(query)
 
     # Énumération sur un symbole nommé : les lignes ancrées SONT la réponse, exhaustive et sans modèle.
     # Mesuré : 9,6x moins cher qu'une synthèse pour la même réponse, en une seconde au lieu de neuf.
-    if salient and _is_enumeration(query):
+    # Sauf question d'usage : « où PaieService écrit les champs » ancré sur `class PaieService` rate
+    # toutes les assignations. Le raccourci ne vaut que pour lister ou localiser le symbole lui-même.
+    if salient and _is_enumeration(query) and not usage:
         anchored = [
             (pattern, count)
             for term in salient
@@ -403,7 +429,7 @@ def _select_patterns(
     # Hors raccourci, la dérivation reste systématique : un terme salient productif ne suffit pas
     # toujours, le pivot pouvant être un nom commun que seul le modèle traduit en identifiant anglais
     # (« connexions » vers connections). Mesuré : sauter la dérivation a coûté une réponse fausse sur dix.
-    structural = _structural_patterns(query)
+    structural = [] if usage else _structural_patterns(query)
     cheap = list(dict.fromkeys(salient + structural))
     counted_salient = [
         (pattern, count)
@@ -412,6 +438,8 @@ def _select_patterns(
     ]
     flavor = _repo_flavor(config)
     derived = [pattern for pattern in _derive_patterns(client, query, flavor) if pattern not in cheap]
+    if usage:
+        derived = [pattern for pattern in derived if not _NAMED_TYPE_DECL.search(pattern)]
     counted_derived = [
         (pattern, count)
         for pattern in derived
@@ -434,6 +462,7 @@ def _select_patterns(
         retry = [
             pattern for pattern in _derive_patterns(client, query, flavor, avoid=derived)
             if pattern not in cheap and pattern not in derived
+            and not (usage and _NAMED_TYPE_DECL.search(pattern))
         ]
         counted_derived += [
             (pattern, count)

@@ -42,7 +42,9 @@ TOOLS: list[dict] = [
             "Réponds à une question de localisation dans le code sans charger de fichiers dans ton contexte. "
             "Le modèle local dérive des motifs ripgrep, exécute la recherche, lit lui-même les extraits utiles "
             "et renvoie une synthèse compacte avec fichiers et numéros de ligne. "
-            "À privilégier dès qu'une réponse exigerait de lire plus de deux ou trois fichiers."
+            "À privilégier dès qu'une réponse exigerait de lire plus de deux ou trois fichiers. "
+            "Si tu connais déjà le nom d'une classe, d'un attribut ou d'un champ, greppe : "
+            "local_search sert à la question ouverte, pas à localiser un symbole nommé."
         ),
         "inputSchema": {
             "type": "object",

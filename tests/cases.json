@@ -77,6 +77,13 @@
       "attendus": ["DEVNULL"],
       "interdits": [],
       "verite": "stdin=subprocess.DEVNULL, sans quoi ripgrep consomme le flux JSON-RPC du serveur MCP"
+    },
+    {
+      "nom": "usages plutôt que déclaration",
+      "commande": ["search", "où Server écrit le journal d'usage des appels MCP ?", "--path", "local_agent"],
+      "attendus": ["_log_usage"],
+      "interdits": [],
+      "verite": "Server._call journalise via _log_usage dans mcp.py, pas via la déclaration de classe"
     }
   ]
 }
