@@ -67,8 +67,9 @@ TOOLS: list[dict] = [
             "Analyse a directory or file against a free-form task, chunking automatically. "
             "Modes: inspect (free-form), summarize (role of each file), duplicates (repeated "
             "implementations). Use it for large-tree exploration, multi-file summaries, duplicate "
-            "detection and bulk classification. Not for screenshots, tickets, or instructions you "
-            "must follow verbatim."
+            "detection and bulk classification. A path that is an image, or a folder of images, is "
+            "OCR'd locally (same as local_image), not sent to the code model. Not for tickets or "
+            "instructions you must follow verbatim."
         ),
         "inputSchema": {
             "type": "object",

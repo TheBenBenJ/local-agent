@@ -7,7 +7,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import budget, prompts, shell
+from . import budget, ocr, prompts, shell
 from .config import Config
 from .files import (
     DECLARATION,
@@ -659,10 +659,17 @@ def analyze(
     files, total = discover_files(config, target, globs=globs, max_files=max_files)
 
     if not files:
+        images = ocr.list_image_files(config, target, globs=globs, max_files=max_files)
+        if images:
+            extra = [str(item) for item in images[1:]]
+            return ocr.read_images(config, str(images[0]), extra or None, task)
         return Report(
             title=f"Local analysis ({mode})",
             summary=f"No analysable file under {path or '.'} after applying guardrails.",
-            next_actions=["Check the path or relax --glob filters"],
+            next_actions=[
+                "If this is a screenshot, call local_image with the file path (png/jpg are not code).",
+                "Check the path or relax --glob filters",
+            ],
         )
 
     chunk_set = build_chunks(config, files)

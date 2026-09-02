@@ -16,6 +16,7 @@ from local_agent.files import GuardrailError  # noqa: E402
 from local_agent.ocr import (  # noqa: E402
     collect_paths,
     crop_region,
+    list_image_files,
     make_regions,
     read_images,
     resolve_image_path,
@@ -133,6 +134,24 @@ def main() -> None:
         check("détail contient le texte lu", "Type d'envoi" in report.details)
         check("paquet de preuves non vide", bool(report.evidence))
         check("région saillante en premier", report.evidence[0]["salient"] is True)
+
+    tests_dir = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory(dir=str(tests_dir)) as raw:
+        folder = Path(raw)
+        shot = folder / "filtre-chantier.png"
+        shot.write_bytes(PNG_1X1)
+        listed = list_image_files(config, folder)
+        check("découvre un png sans le filtre binaire", shot.resolve() in [item.resolve() for item in listed])
+        from local_agent.tasks import analyze
+
+        class Boom:
+            def complete(self, *args, **kwargs):
+                raise AssertionError("le modèle code ne doit pas voir un png")
+
+        relative = str(shot.relative_to(config.repo_root))
+        routed = analyze(config, Boom(), relative, task="filtre")
+        check("local_analyze d'un png bascule sur l'OCR", routed.title.startswith("Image text"))
+        check("local_analyze n'appelle pas le 35B", routed.stats.get("backend") in {"macos-vision", "tesseract"})
 
     check("parse a832-R1", parse_region_id("a832b1c4-R1") == ("a832b1c4", "R1"))
     check("parse image://", parse_region_id("image://a832b1c4/R2") == ("a832b1c4", "R2"))

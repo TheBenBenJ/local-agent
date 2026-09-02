@@ -14,7 +14,15 @@ from pathlib import Path
 
 from . import evidence
 from .config import Config
-from .files import DENIED_PATTERNS, GuardrailError, relative_to_root
+from .files import (
+    DENIED_DIRECTORIES,
+    DENIED_PATTERNS,
+    GuardrailError,
+    _run_ripgrep,
+    is_git_ignored,
+    relative_to_root,
+    unlocked_directories,
+)
 from .report import Report
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif", ".tif", ".tiff", ".bmp"}
@@ -98,6 +106,57 @@ def resolve_image_path(config: Config, raw: str) -> Path:
     if size == 0:
         raise GuardrailError(f"fichier vide : {resolved}")
     return resolved
+
+
+def _looks_like_image_glob(globs: list | None) -> bool:
+    if not globs:
+        return False
+    haystack = " ".join(str(item).lower() for item in globs)
+    return any(ext.lstrip(".") in haystack for ext in IMAGE_EXTENSIONS)
+
+
+def list_image_files(
+    config: Config,
+    target: Path,
+    globs: list | None = None,
+    max_files: int | None = None,
+) -> list[Path]:
+    """Liste des captures sous la cible, sans le filtre binaire de la découverte code."""
+    limit = max(1, min(max_files or MAX_IMAGES, MAX_IMAGES))
+    if target.is_file():
+        return [target] if target.suffix.lower() in IMAGE_EXTENSIONS else []
+
+    unlocked = unlocked_directories(config, target)
+    args = ["--files", "--no-messages"]
+    if is_git_ignored(config, target):
+        args.append("--no-ignore-vcs")
+    patterns = list(globs) if _looks_like_image_glob(globs) else [f"*{ext}" for ext in sorted(IMAGE_EXTENSIONS)]
+    for pattern in patterns:
+        args += ["--glob", pattern]
+    for directory in sorted(DENIED_DIRECTORIES - unlocked):
+        args += ["--glob", f"!{directory}/**"]
+    args.append(".")
+    found: list[Path] = []
+    for name in _run_ripgrep(args, target):
+        path = target / name
+        if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.is_file():
+            continue
+        relative = relative_to_root(config, path)
+        parts = Path(relative).parts
+        if any(part in DENIED_DIRECTORIES and part not in unlocked for part in parts):
+            continue
+        if any(fnmatch.fnmatch(path.name, pattern) for pattern in DENIED_PATTERNS):
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size == 0 or size > MAX_IMAGE_BYTES:
+            continue
+        found.append(path)
+        if len(found) >= limit:
+            break
+    return found
 
 
 def _usable_lines(lines: list[dict]) -> list[dict]:
