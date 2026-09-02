@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import struct
 import subprocess
 import sys
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from local_agent.agent import run_task  # noqa: E402
 from local_agent.config import Config  # noqa: E402
 from local_agent.extract import extract_log  # noqa: E402
+from local_agent.files import relative_to_root  # noqa: E402
 from local_agent.mlx import MlxError  # noqa: E402
 from local_agent.router import route_task  # noqa: E402
 from local_agent.store import expand  # noqa: E402
@@ -188,6 +190,7 @@ def main() -> None:
         scoped = _cfg(playground)
         decision = route_task(scoped, "Where is invoice.read validated?", ["repo://."])
         check("297B-class fixture DIRECT", decision.tier == "direct")
+        check("tiny repo raw tokens > 0", decision.estimated_raw_tokens > 0)
         report = run_task(
             scoped,
             ForbiddenLLM(),
@@ -201,6 +204,16 @@ def main() -> None:
         packed = report.summary + " " + " ".join(str(item.get("content") or "") for item in report.evidence)
         check("DIRECT packet has invoice.read", "invoice.read" in packed)
         check("DIRECT has evidence", bool(report.evidence))
+        check(
+            "locations are repo-relative",
+            any(str(loc).startswith("InvoiceController.py") for loc in report.locations),
+        )
+        check(
+            "relative_to_root ignores /private",
+            relative_to_root(scoped, (playground / "InvoiceController.py").resolve()) == "InvoiceController.py",
+        )
+        blob = json.dumps(report.to_dict(), ensure_ascii=False)
+        check("DIRECT packet under 600 chars", len(blob) < 600)
         from local_agent.store import Store
 
         db = Store(playground / "t.db")

@@ -76,7 +76,9 @@ def _evidence_section(items: list[dict], limit: int = 15) -> list[str]:
 
 
 def render_markdown(report: Report, config: Config) -> str:
-    lines = [f"# {report.title}", ""]
+    lines: list[str] = []
+    if report.title:
+        lines += [f"# {report.title}", ""]
     if report.summary:
         lines += [report.summary.strip(), ""]
     lines += _section("Findings", report.findings)

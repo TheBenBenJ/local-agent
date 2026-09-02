@@ -30,7 +30,8 @@ Harness routing accuracy on scored cases A+B: **2/2**. Unit routing cases: **8/8
 
 | Scenario | Raw context | Claude-visible | Direct avoided | Interception | Correct | Latency |
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
-| A Repo, tier DIRECT (297 B fixture, slim) | 74 tok | 235 tok | 0 | 0% | yes (`require_permission`, `invoice.read`) | 0.03 s |
+| A Repo, tier DIRECT (297 B fixture, slim) | 74 tok | 101 tok | 0 | 0% | yes (`require_permission`, `invoice.read`) | 0.03 s |
+| A same, first slim (absolute paths + wrapper) | 74 tok | 235 tok | 0 | 0% | yes | 0.03 s |
 | A same, first 35B packet (pre-slim) | 74 tok | 383 tok | 0 | 0% | yes | 0.08 s |
 | A same, baseline B `rg` | 74 tok | 51 tok | 23 | 31% | n/a (deterministic) | 0.014 s |
 | B 2.2 MB log, REDUCE extract-only (9B resident, 0 LLM) | 560 953 tok | 866 tok | 560 087 | 99.8% | yes (`InvoiceService`, `null`) | 0.04 s |
@@ -43,7 +44,7 @@ Harness routing accuracy on scored cases A+B: **2/2**. Unit routing cases: **8/8
 
 Notes:
 
-- Case A packet is still larger than the 297 B source (235 tok vs 74). The win is **not** compression: it is skipping the local LLM (6.9 s → 0.03 s) and keeping both identifiers.
+- Case A packet is still larger than the 297 B source (101 tok vs 74; `rg` is 51). The win is **not** compression: it is skipping the local LLM (6.9 s → 0.03 s) and keeping both identifiers. Absolute `/var/folders` paths were counted as the skipped `var/` directory, so the tiny fixture used to estimate 0 tokens.
 - Case B no longer calls a local LLM when high-signal excerpts exist (0.04 s extract vs 4–5 s LLM). The planted cause stays in runtime evidence. `rg ERROR` remains ~800× faster. A 35B/9B sentence on that digest is optional, not the default.
 - Case C with `image://` + `repo://` is routed AGENT (multi-source). On the 9B: 5.7 s, 3 local LLM calls, same `DIV`/`HCP` hits as the 35B at 13.6 s. Deterministic compare without a repo pointer remains faster (0.72 s) and smaller, but misses `DIV`.
 - Case E baseline A (80 kB) is still an assumed PHPUnit-style dump.
@@ -151,7 +152,7 @@ Default local model: **Qwen3.5-9B-MLX-4bit**.
 ## Next five priorities
 
 1. Replay a billed Claude Code day (eligible vs already-in-thread vs expand), not only on-disk artifacts.
-2. DIRECT packet still 235 tok vs 74 raw: drop more wrapper or return rg lines only.
+2. DIRECT packet is 101 tok vs 74 raw (`rg` 51). Further cuts would drop STATUS/heuristic or the hit line.
 3. Restart MCP clients on schema 1.3.0 (`local_task` routing description).
 4. Keep pixel/SHA256 labels in the compare packet (511 tok). Do not strip them to recover the old 437.
 5. Live Jira fetch inside the harness (still a fixture).

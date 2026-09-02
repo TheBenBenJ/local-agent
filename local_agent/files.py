@@ -102,8 +102,10 @@ def resolve_path(config: Config, raw: str | None) -> Path:
 
 
 def relative_to_root(config: Config, path: Path) -> str:
+    root = Path(config.repo_root).resolve()
+    resolved = Path(path).expanduser().resolve()
     try:
-        return str(path.relative_to(config.repo_root))
+        return str(resolved.relative_to(root))
     except ValueError:
         return str(path)
 

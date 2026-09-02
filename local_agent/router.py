@@ -115,13 +115,18 @@ _SKIP_DIR = {".git", "node_modules", "vendor", "var", "__pycache__", ".venv"}
 
 
 def _dir_bytes(root: Path, *, cap_files: int = 60, cap_bytes: int = 500_000) -> int:
+    root = Path(root).resolve()
     total = 0
     count = 0
     try:
         for path in root.rglob("*"):
             if not path.is_file():
                 continue
-            if any(part in _SKIP_DIR for part in path.parts):
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                continue
+            if any(part in _SKIP_DIR for part in relative.parts[:-1]):
                 continue
             try:
                 total += path.stat().st_size
@@ -279,9 +284,9 @@ def route_task(
     if "jira" in schemes and schemes & {"repo", "file"}:
         return finish("agent", "ticket plus repository")
     if raw <= threshold:
-        reason = f"source ~{raw} tokens <= DIRECT_CONTEXT_THRESHOLD {threshold}"
+        reason = f"source ~{raw} tok <= {threshold}"
         if SYNTHESIS_FLOOR_TOKENS >= raw:
-            reason += "; synthesis would exceed the source"
+            reason += ", synthesis >= source"
         return finish("direct", reason)
     if "log" in schemes or any(LOG_NAME.search(item.reference or "") for item in parsed):
         return finish("reduce", f"large log (~{raw} tokens), high-signal extraction then one synthesis")

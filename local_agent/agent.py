@@ -59,13 +59,18 @@ def _packet_item(db: Store, identifier: str) -> dict:
         extra = f"{loc} {text}".strip()
         if extra and extra not in preview:
             preview = f"{preview}; {extra}" if preview else extra
-    return {
+    item = {
         "id": identifier,
         "type": row.get("type") or "evidence",
         "content": preview[:400] if payload.get("high_signal") else preview[:220],
-        "source": row.get("source") or "",
-        "confidence": row.get("confidence"),
     }
+    source = str(row.get("source") or "").strip()
+    if source:
+        item["source"] = source
+    confidence = row.get("confidence")
+    if isinstance(confidence, (int, float)):
+        item["confidence"] = confidence
+    return item
 
 
 def _backfill_hits(
@@ -647,12 +652,9 @@ def run_task(
         extra = f"\nTESTS: {tests}" if tests else ""
         summary = (
             f"STATUS: {status}\nTIER: direct{extra}\n"
-            f"CONFIDENCE: {band} ({confidence}, heuristic)\n"
-            f"{decision.reason}"
+            f"CONFIDENCE: {band} ({confidence}, heuristic)"
         )
-        if locations:
-            summary += "\n" + "\n".join(locations[:8])
-        elif body and body not in summary:
+        if not locations and body and body not in summary:
             summary += "\n" + body[:400]
     else:
         summary = (
@@ -737,19 +739,24 @@ def run_task(
         details="",
     )
     if decision.tier == "direct":
+        report.title = ""
         report.next_actions = []
+        report.risks = [] if computed_risk == "LOW" and status != "needs_claude" else report.risks
+        if locations:
+            report.findings = []
+            loc_files = []
+            for loc in locations:
+                name = str(loc).split(":")[0]
+                if name and name not in loc_files:
+                    loc_files.append(name)
+            if files and all(name in loc_files for name in files):
+                report.files = []
         report.stats = {
-            "status": status,
             "tier": decision.tier,
-            "routing_reason": decision.reason,
             "local_llm_calls": ctx.llm_calls,
             "avoidable_local_llm_calls": avoidable,
             "latency_s": elapsed,
-            "tool_calls": ctx.tool_calls,
-            "timings": timings,
-            "task_id": task_id,
         }
-        report.findings = locations[:8]
         for item in report.evidence:
             item["content"] = str(item.get("content") or "")[:220]
     if status == "needs_claude":
