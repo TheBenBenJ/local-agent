@@ -211,4 +211,6 @@ python3 ~/.local-agent/tests/run_all.py
 
 ## Development
 
+Public version: **1.3.0** (`local_agent/version.py`, also `local_ping.server.version`). This release is functionally frozen: later work is for bugs, regressions, security, compatibility, or a measured low-cost win, not a feature roadmap.
+
 Layout: `local_agent/` (router, agent loop, MCP, store, providers). Tests: `python3 tests/run_all.py`. After MCP code changes, restart the client and compare `local_ping.server.git_head` to `./bin/local-agent ping`.
