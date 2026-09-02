@@ -15,7 +15,7 @@ from .config import Config, get_config
 from .files import GuardrailError, ensure_usable_root
 from .mlx import MlxClient, MlxError
 from .report import clamp, render_markdown
-from . import edit, shell, tasks
+from . import edit, ocr, shell, tasks
 
 SERVER_NAME = "local-agent"
 SERVER_VERSION = "1.0.0"
@@ -161,6 +161,36 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "local_image",
+        "description": (
+            "Extract on-screen text from a screenshot or image without loading the pixels into your "
+            "context and without swapping the local LLM. Uses macOS Vision OCR (Tesseract fallback). "
+            "Pass a filesystem path; absolute paths are allowed because captures rarely live in the "
+            "git repo. One call can take several images. Inventory only: labels, errors, buttons, "
+            "empty states. Not a recette verdict and not layout or colour: look at the image yourself "
+            "when those matter. Prefer this over attaching the image as soon as you have a path."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Image file path (absolute allowed, screenshots are often outside the repo)",
+                },
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Additional images, e.g. a recette set of three screenshots",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Optional focus: matching OCR lines are listed first (substring filter, no model)",
+                },
+                "repo": _REPO,
+            },
+        },
+    },
+    {
         "name": "local_diff_review",
         "description": (
             "Review a git diff without loading it into your context: the local model reads the diff, "
@@ -263,6 +293,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             "mlx": client.ping(),
             "repo_root_state": root_state,
             "checks_disponibles": checks,
+            "ocr": ocr.backend_status(),
             "config": config.as_summary(),
         }
         return json.dumps(payload, ensure_ascii=False, indent=2), 0
@@ -330,6 +361,17 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             base=arguments.get("base"),
             task=arguments.get("task"),
         )
+    elif name == "local_image":
+        report = ocr.read_images(
+            config,
+            arguments.get("path"),
+            arguments.get("paths"),
+            arguments.get("task"),
+        )
+        text = render_markdown(report, ocr.image_config(config))
+        source = report.stats.get("source_caracteres")
+        saved = max(0, int(source) - len(text)) if isinstance(source, int) else 0
+        return text, saved
     else:
         raise ValueError(f"unknown tool: {name}")
 

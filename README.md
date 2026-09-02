@@ -113,6 +113,7 @@ Redémarrer le client après toute modification de ces fichiers.
 | `local_fix`          | Modification mécanique, transactionnelle par défaut           | `path`, `task`, `mode`, `patch_id`, `globs`, `allow_dirty` |
 | `local_test_analysis`| Contrôle projet filtré et synthétisé                         | `kind`, `target`, `filter`                             |
 | `local_log_analysis` | Analyse de logs volumineux                                   | `path`, `task`, `patterns`                             |
+| `local_image`        | OCR d'une capture (Vision, pas le LLM)                        | `path`, `paths`, `task`                                 |
 | `local_diff_review`  | Revue d'un diff git avec message de commit proposé            | `scope`, `base`, `task`                                |
 | `local_ping`         | Diagnostic : connexion, racine, contrôles disponibles, config | aucun                                                  |
 
@@ -136,6 +137,14 @@ l'**effet facturé** (ce one-shot × `LOCAL_AGENT_COMPOUND_TURNS`, défaut 25). 
 préfixe n'est pas économisé une fois, il l'est à chaque requête suivante. Mesuré sur une longue session
 Claude : 14 339 one-shot → ~390 000 facturés (~27×). Le même appel vaut plus en début de session qu'à
 la fin. Cumuls dans `~/.local-agent/usage-totals.json` ; journal JSONL dans `usage.jsonl`.
+
+### Captures d'écran
+
+`local_image` lit le fichier image sur disque et rend le texte à l'écran (libellés, erreurs, boutons).
+Le 35B n'est pas appelé, le modèle vision n'est pas chargé : OCR macOS Vision, Tesseract en repli.
+Un chemin absolu hors dépôt est accepté, les captures n'étant presque jamais dans git. Inventaire
+seulement : layout, couleur et verdict de recette restent à l'orchestrateur. Mesuré : trois captures
+de recette pesaient 124 Ko dans le contexte, plus que tout le code de la session.
 
 ## Utilisation en ligne de commande
 
@@ -164,6 +173,9 @@ la fin. Cumuls dans `~/.local-agent/usage-totals.json` ; journal JSONL dans `usa
 ~/.local-agent/bin/local-agent diff              # tout le non committé (worktree)
 ~/.local-agent/bin/local-agent diff staged
 ~/.local-agent/bin/local-agent diff branch --base main
+
+~/.local-agent/bin/local-agent image ~/Desktop/capture.png
+~/.local-agent/bin/local-agent image ecran1.png ecran2.png ecran3.png --task "erreur"
 ```
 
 `--json` remplace le rendu markdown par le rapport JSON brut.
@@ -216,7 +228,9 @@ liste celles qui sont disponibles.
 
 ## Garde-fous
 
-- **Confinement** : tout chemin est résolu et refusé s'il sort de la racine du dépôt.
+- **Confinement** : tout chemin est résolu et refusé s'il sort de la racine du dépôt. Exception :
+  `local_image` accepte un fichier image absolu hors git (captures), refuse les secrets, `.ssh` et
+  les fichiers de plus de 8 Mo.
 - **Exclusions** : `.git`, `node_modules`, `vendor`, `var`, `temp`, `_db`, builds, caches, fichiers
   binaires. Un répertoire normalement exclu redevient lisible quand le chemin le désigne explicitement,
   ce qui permet d'analyser `var/log` sans ouvrir le reste de `var`.
@@ -245,6 +259,8 @@ local_agent/
 ├── shell.py     exécution de commandes en liste blanche, état du working tree
 ├── prompts.py   consignes, contrats de sortie, extraction JSON tolérante aux troncatures
 ├── tasks.py     search, analyze, logs, check, diff_review
+├── ocr.py       OCR local d'une capture (Vision / Tesseract, sans LLM)
+├── ocr_vision.swift  binaire Vision compilé à la demande dans var/local-ocr
 ├── edit.py      propositions transactionnelles et réécriture sous contrôle git
 ├── report.py    rapport compact et clamp de sortie
 ├── cli.py       interface en ligne de commande

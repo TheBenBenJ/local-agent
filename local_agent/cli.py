@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from . import edit, tasks
+from . import edit, ocr, tasks
 from .config import get_config
 from .files import GuardrailError
 from .mlx import MlxClient, MlxError
@@ -68,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--base", default=None, help="branche de base pour scope=branch")
     diff.add_argument("--task", default=None)
 
+    image = subparsers.add_parser("image", help="OCR local d'une capture, sans modèle de synthèse")
+    image.add_argument("paths", nargs="+", help="chemins d'images, absolus autorisés")
+    image.add_argument("--task", default=None, help="filtre de lignes (sous-chaîne, sans modèle)")
+
     return parser
 
 
@@ -128,6 +132,9 @@ def _dispatch(arguments: argparse.Namespace, config, client: MlxClient) -> Repor
         return tasks.check(config, client, arguments.kind, arguments.target, arguments.filter_expression)
     if command == "diff":
         return tasks.diff_review(config, client, scope=arguments.scope, base=arguments.base, task=arguments.task)
+    if command == "image":
+        paths = list(arguments.paths)
+        return ocr.read_images(config, paths[0], paths[1:] or None, arguments.task)
     raise ValueError(f"commande inconnue : {command}")
 
 
