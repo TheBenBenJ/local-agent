@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from . import evidence
+from . import evidence, grid
 from .config import Config
 from .files import (
     DENIED_DIRECTORIES,
@@ -400,6 +400,7 @@ def read_images(
     errors: list[str] = []
     evidence_items: list[dict] = []
     line_count = 0
+    table_count = 0
     needle = (task or "").strip().lower()
     matched: list[str] = []
 
@@ -410,6 +411,7 @@ def read_images(
         if not isinstance(lines, list):
             lines = []
         rows = rows_from_lines(lines)
+        table = grid.build_grid(lines)
         line_count += len(rows)
         label = relative_to_root(config, file_path)
         image_id = image_id_for(file_path)
@@ -422,6 +424,7 @@ def read_images(
                 "size": file_path.stat().st_size,
                 "lines": lines,
                 "regions": regions,
+                "grid": table,
             },
         )
         evidence_items.extend(regions)
@@ -431,20 +434,32 @@ def read_images(
             findings.append(f"{label}: no text detected. The image may be graphical only; look at it yourself.")
             continue
         if needle:
-            matched.extend(f"{label}: {row}" for row in rows if needle in row.lower())
-        preview = rows[:8]
-        findings.append(
-            f"{label} ({len(rows)} lines, id={image_id}): " + " | ".join(preview)
-        )
-        details_parts.append("### " + label + f" (`{image_id}`)\n" + "\n".join(rows))
+            haystack = rows + ([cell for row in table for cell in row] if table else [])
+            matched.extend(f"{label}: {item}" for item in haystack if needle in item.lower())
+        if table:
+            table_count += 1
+            findings.append(
+                f"{label} (table {len(table)}x{len(table[0])}, id={image_id}): "
+                + " | ".join(table[0][:8])
+            )
+            details_parts.append(
+                "### " + label + f" (`{image_id}`)\n" + grid.render_markdown_table(table)
+            )
+        else:
+            preview = rows[:8]
+            findings.append(
+                f"{label} ({len(rows)} lines, id={image_id}): " + " | ".join(preview)
+            )
+            details_parts.append("### " + label + f" (`{image_id}`)\n" + "\n".join(rows))
 
     if matched:
         findings = [f"Matches for {task!r}:"] + matched[:20] + findings
 
     summary = (
         f"OCR inventory of {len(resolved)} image(s), {line_count} text lines, backend={backend}. "
-        "Verbatim on-screen text, not a recette verdict. Crop a region with local_image_crop "
-        "when layout or colour matters; do not attach the full screenshot."
+        "Verbatim on-screen text, not a recette verdict. Spreadsheet screenshots are rebuilt as a "
+        "table from bounding boxes. Crop a region with local_image_crop when layout or colour "
+        "matters; do not attach the full screenshot."
     )
     source_chars = sum(int(item.stat().st_size * 4 / 3) for item in resolved)
     return Report(
@@ -460,6 +475,7 @@ def read_images(
         stats={
             "images": len(resolved),
             "lignes": line_count,
+            "tables": table_count,
             "regions": len(evidence_items),
             "backend": backend,
             "source_caracteres": source_chars,

@@ -157,10 +157,10 @@ appel vaut plus en début de session qu'à la fin. Cumuls dans `~/.local-agent/u
 
 ### Captures d'écran
 
-`local_image` lit le fichier, rend le texte verbatim et des ids de régions. `local_image_crop` sort
-un PNG de la zone utile. Pas de modèle, pas de VLM. Un chemin absolu hors git est accepté. Claude
-vérifie visuellement les régions qui changent l'implémentation, pas trois 4K par défaut. Mesuré :
-trois captures de recette pesaient 124 Ko dans le contexte, plus que tout le code de la session.
+`local_image` lit le fichier, rend le texte verbatim et des ids de régions. Un tableau (Excel,
+DataTable) est reconstruit en grille à partir des boîtes, sans modèle : les lettres de colonnes
+sont écartées, `#DIV/O!` redevient `#DIV/0!`. `local_image_crop` sort un PNG de la zone utile.
+Pas de VLM. Un chemin absolu hors git est accepté.
 
 ## Utilisation en ligne de commande
 
@@ -276,6 +276,7 @@ local_agent/
 ├── shell.py     exécution de commandes en liste blanche, état du working tree
 ├── prompts.py   consignes, contrats de sortie, extraction JSON tolérante aux troncatures
 ├── tasks.py     search, analyze, logs, check, diff_review
+├── grid.py      reconstruction de tableau depuis les boîtes OCR, sans LLM
 ├── evidence.py  cache des paquets de preuves (ids, expiration 7 jours)
 ├── ocr.py       OCR et crop d'une capture (Vision / Tesseract, sans LLM)
 ├── ocr_vision.swift  binaire Vision compilé à la demande dans var/local-ocr
