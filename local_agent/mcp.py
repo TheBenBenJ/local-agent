@@ -43,6 +43,7 @@ TOOLS: list[dict] = [
             "Primary entry: send a mission and sources (repo://, image://, log://, jira://, confluence://, data://). "
             "Prefer this before acquiring large repo, log, image or doc context yourself. "
             "Known symbol or tiny source: deterministic tools, no local LLM. "
+            "If you already know a class or function name, put it in the mission so DIRECT can grep it. "
             "Large reducible source: extract then one local synthesis. "
             "High-risk or architecture: skip, keep Claude. "
         ),

@@ -18,7 +18,8 @@ from local_agent.config import Config  # noqa: E402
 from local_agent.extract import extract_log  # noqa: E402
 from local_agent.files import relative_to_root  # noqa: E402
 from local_agent.mlx import MlxError  # noqa: E402
-from local_agent.router import route_task  # noqa: E402
+from local_agent.gateway import parse_sources  # noqa: E402
+from local_agent.router import STOPWORDS, grep_pattern, initial_action_hint, route_task  # noqa: E402
 from local_agent.store import expand  # noqa: E402
 
 
@@ -103,6 +104,41 @@ def main() -> None:
     check("confluence first tool fetch_page", wiki.first_tool == "fetch_page")
     mixed = route_task(cfg, "Summarize the ticket using the repository.", ["jira://LYSI-1", "repo://local_agent"])
     check("jira plus repo AGENT", mixed.tier == "agent")
+
+    router_src = parse_sources(["repo://local_agent/router.py"])
+    where_q = "Where is the deterministic tier routing decided?"
+    where_tool, where_args = initial_action_hint(where_q, router_src)
+    where_pat = str(where_args.get("pattern") or "")
+    check("A search_repo", where_tool == "search_repo")
+    check("A Where is not the grep pattern", where_pat.lower() != "where")
+    check("A fallback is not a stopword", where_pat.lower() not in STOPWORDS)
+    check("grep_pattern skips Where", grep_pattern(where_q).lower() != "where")
+
+    named = route_task(cfg, "Locate route_task and initial_action_hint", ["repo://local_agent/router.py"])
+    check("B named symbols DIRECT", named.tier == "direct")
+    check("B pattern is route_task", named.first_args.get("pattern") == "route_task")
+    check("B keeps route_task", "route_task" in named.symbols)
+    check("B keeps initial_action_hint", "initial_action_hint" in named.symbols)
+    check("B Locate is not a symbol", "Locate" not in named.symbols and "locate" not in named.symbols)
+
+    starters = (
+        "Where is the deterministic tier routing decided?",
+        "What handles the deterministic tier routing?",
+        "Which function returns the initial action hint?",
+        "Show me the deterministic tier routing.",
+        "Find the deterministic tier routing.",
+        "Locate the deterministic tier routing.",
+        "Tell me the deterministic tier routing.",
+    )
+    for starter in starters:
+        _tool, args = initial_action_hint(starter, router_src)
+        pat = str(args.get("pattern") or "")
+        check(f"C starter not stopword ({starter.split()[0]})", pat.lower() not in STOPWORDS)
+
+    kept = route_task(cfg, "Where is route_task defined?", ["repo://local_agent/router.py"])
+    check("D explicit snake kept", "route_task" in kept.symbols)
+    check("D pattern is route_task", kept.first_args.get("pattern") == "route_task")
+    check("D explicit still DIRECT", kept.tier == "direct")
 
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)

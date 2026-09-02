@@ -37,11 +37,13 @@ WHOLE_REPO_BYTES = 10_000_000
 SYNTHESIS_FLOOR_TOKENS = 400
 
 STOPWORDS = {
-    "where", "what", "which", "when", "why", "how", "find", "show", "the",
-    "this", "that", "with", "from", "into", "class", "file", "files", "code",
-    "repo", "task", "local", "please", "pour", "quoi", "comment", "est",
-    "une", "des", "les", "dans", "pourqoi", "pourquoi", "liste", "list",
+    "where", "what", "which", "when", "why", "how", "find", "show", "tell",
+    "locate", "the", "this", "that", "with", "from", "into", "class", "file",
+    "files", "code", "repo", "task", "local", "please", "pour", "quoi",
+    "comment", "est", "une", "des", "les", "dans", "pourqoi", "pourquoi",
+    "liste", "list",
 }
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
 
 CAUSAL = re.compile(
     r"\b(why|pourquoi|root cause|cause racine|how come|remain visible|"
@@ -109,6 +111,17 @@ def explicit_symbols(task: str) -> list[str]:
         if match.lower() not in STOPWORDS and match not in found:
             found.append(match)
     return found[:6]
+
+
+def grep_pattern(task: str, symbols: list[str] | None = None) -> str:
+    """First discriminant token for search_repo. Never a STOPWORDS entry."""
+    for candidate in symbols or []:
+        if str(candidate).lower() not in STOPWORDS:
+            return str(candidate)
+    for match in _TOKEN.findall(task or ""):
+        if match.lower() not in STOPWORDS:
+            return match
+    return "TODO"
 
 
 _SKIP_DIR = {".git", "node_modules", "vendor", "var", "__pycache__", ".venv"}
@@ -219,8 +232,7 @@ def initial_action_hint(
         ".",
     )
     terms = symbols if symbols is not None else explicit_symbols(task)
-    pattern = terms[0] if terms else (re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", blob) or ["TODO"])[0]
-    return "search_repo", {"pattern": pattern, "path": focus}
+    return "search_repo", {"pattern": grep_pattern(blob, symbols=terms), "path": focus}
 
 
 def _decision(

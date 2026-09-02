@@ -184,6 +184,8 @@ Commands:
 
 Caller guidance already in the tool description ("If you already know a class, attribute or field name, grep") is confirmed by measurement, and extends to `local_task`: name the symbol in the mission when you know it.
 
+The `Where` grep leak (fallback ignored `STOPWORDS`) was fixed after this measurement. The table above remains the cost of that leak. After the fix, an interrogative with no explicit symbol on a large file may still be REDUCE; the probe must not search `Where`.
+
 ## MCP freshness verified (2026-09-02)
 
 `local_ping` with `repo=/Users/benjaminmille/.local-agent` returns `server.git_head 1f532ea4713f`, equal to the CLI. REDUCE locations came back relative (`var/bench.log:1-4`), and `jira://LYSI-5177` routed DIRECT to `fetch_issue` with 0 local LLM calls, 0.6 s, 150 visible tokens, title only, description kept in the store. Priority 2 below is closed for this client.
