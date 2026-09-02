@@ -28,6 +28,18 @@ def _lines(report: Report) -> list[str]:
     return [line.strip() for line in blob.splitlines() if line.strip() and not line.startswith("#")]
 
 
+def _ocr_payloads(report: Report) -> set[str]:
+    payloads: set[str] = set()
+    for line in _lines(report):
+        text = line.split("): ", 1)[-1] if "): " in line else line
+        for part in text.split("|"):
+            cell = part.strip()
+            if len(cell) < 3 or cell.startswith("/") or cell.startswith("#"):
+                continue
+            payloads.add(cell[:80])
+    return payloads
+
+
 def pixel_diff(left: Path, right: Path, threshold: float = 0.12) -> dict:
     binary = ocr._ensure_vision_binary()
     process = subprocess.run(
@@ -104,18 +116,18 @@ def compare_images(config: Config, reference: str, current: str, *, client=None)
             findings.append(f"Pixel diff skipped: {error}")
         ocr_left = ocr.read_images(config, str(left), None, None, client=client)
         ocr_right = ocr.read_images(config, str(right), None, None, client=client)
-        set_left = set(_lines(ocr_left))
-        set_right = set(_lines(ocr_right))
-        missing = sorted(set_left - set_right)[:12]
-        added = sorted(set_right - set_left)[:12]
+        set_left = _ocr_payloads(ocr_left)
+        set_right = _ocr_payloads(ocr_right)
+        missing = sorted(set_left - set_right)[:8]
+        added = sorted(set_right - set_left)[:8]
         if missing:
-            findings.append("MEDIUM: OCR text only in reference: " + " | ".join(missing[:4]))
+            findings.append("MEDIUM: OCR text only in reference: " + " | ".join(missing[:3]))
         if added:
-            findings.append("MEDIUM: OCR text only in current: " + " | ".join(added[:4]))
+            findings.append("MEDIUM: OCR text only in current: " + " | ".join(added[:3]))
         if not missing and not added:
             findings.append("Text: identical at OCR granularity")
-        evidence.extend((ocr_left.evidence or [])[:6])
-        evidence.extend((ocr_right.evidence or [])[:6])
+        evidence.extend((ocr_left.evidence or [])[:2])
+        evidence.extend((ocr_right.evidence or [])[:2])
         summary = (
             f"{len(findings)} material differences between {left.name} and {right.name} "
             f"(SHA256 {hash_left[:12]} vs {hash_right[:12]}, pixel {ratio:.0%})."

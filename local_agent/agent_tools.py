@@ -571,31 +571,38 @@ def _inspect_image(ctx: ToolContext, arguments: dict) -> str:
 def _compare(ctx: ToolContext, arguments: dict) -> str:
     report = compare_images(ctx.config, str(arguments["reference"]), str(arguments["current"]), client=ctx.client)
     ctx.source_chars += int(report.stats.get("source_caracteres") or 0)
-    verdict = "; ".join(report.findings[:6])[:300] or report.summary[:300]
+    verdict = (
+        f"SHA256 {report.stats.get('sha_left')} vs {report.stats.get('sha_right')}; "
+        f"{report.stats.get('backend')}"
+    )
     items = [
         ctx.remember(
             "image",
             source="compare",
-            summary=verdict,
+            summary=verdict[:220],
             payload={
-                "findings": report.findings[:8],
+                "findings": report.findings[:6],
                 "sha_left": report.stats.get("sha_left"),
                 "sha_right": report.stats.get("sha_right"),
                 "backend": report.stats.get("backend"),
             },
         )
     ]
-    for item in (report.evidence or [])[:7]:
+    for item in report.evidence or []:
+        if item.get("type") != "pixel_region":
+            continue
         items.append(
             ctx.remember(
                 "image",
                 source=str(item.get("id") or "compare"),
-                summary=str(item.get("content") or report.summary)[:300],
+                summary=str(item.get("content") or verdict)[:220],
                 payload={"box": item.get("box"), "type": item.get("type")},
                 confidence=item.get("confidence") if isinstance(item.get("confidence"), (int, float)) else None,
             )
         )
-    return _json({"evidence": items, "summary": report.summary, "findings": report.findings, "evidence_items": report.evidence[:8]})
+        if len(items) >= 3:
+            break
+    return _json({"evidence": items, "summary": report.summary, "findings": report.findings[:6], "evidence_items": report.evidence[:4]})
 
 
 def _get_rules(ctx: ToolContext, arguments: dict) -> str:

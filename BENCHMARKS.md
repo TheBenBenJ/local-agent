@@ -95,11 +95,11 @@ Reconstructed from artifacts still on disk, 2 September 2026, 9B loaded but **0 
 
 | Session | Type | Raw external context | Claude-visible | Direct avoided | Quality |
 | ------- | ---- | -------------------: | -------------: | -------------: | ------- |
-| A Recette UI LYSI-5177 (2 annexes PNG, transcript a64d3fc5) | DIRECT | 35 142 tok | 663 tok | 34 479 | 4 (`pixel`, `SHA256`) |
+| A Recette UI LYSI-5177 (2 annexes PNG, transcript a64d3fc5) | DIRECT | 35 142 tok | 254 tok | 34 888 | 4 (`pixel`, `SHA256`) |
 | B Module lookup `route_task` (transcript a8ca4c10, two source files as proxy) | DIRECT | 10 929 tok | 96 tok | 10 833 | 4 |
 | C Log incident (2.2 MB fixture, extract-only REDUCE) | REDUCE | 560 953 tok | 848 tok | 560 105 | 4 |
 
-First session A run scored 0: DIRECT stored OCR `score=0.265…` and dropped the compare findings. Labels restored: quality 4. After the wrapper slim, the compare packet is 663 tok because findings stay (they were previously wiped when locations were empty). Session B slim: 202 → 96 tok.
+First session A run scored 0: DIRECT stored OCR `score=0.265…` and dropped the compare findings. Labels restored: quality 4. Wrapper slim then dropped duplicate evidence and path-prefixed OCR headers: 663 → 254 tok, interception 99.3%. Session B slim: 202 → 96 tok.
 
 ## Cursor jsonl (not billed)
 
@@ -162,6 +162,6 @@ Default local model: **Qwen3.5-9B-MLX-4bit**.
 
 1. Capture billed Claude tokens (usage API or export), not only jsonl on disk.
 2. Restart MCP clients on schema 1.3.0 (`local_task` routing description).
-3. Keep pixel/SHA256 labels in the compare packet. Session A is 663 tok with findings; do not strip them.
+3. Keep pixel/SHA256 labels in the compare packet. Session A is 254 tok with findings; do not strip the verdict to recover more.
 4. Live Jira fetch inside the harness (still a fixture).
 5. DIRECT 101 tok vs 74 raw (`rg` 51). Further cuts drop STATUS or the hit line.

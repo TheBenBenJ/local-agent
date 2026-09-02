@@ -172,6 +172,8 @@ def main() -> None:
         check("DIRECT compare 0 LLM", compared.stats.get("local_llm_calls") == 0)
         check("DIRECT compare packet SHA256", "SHA256" in packed)
         check("DIRECT compare packet pixel", "pixel" in packed.lower())
+        blob = json.dumps(compared.to_dict(), ensure_ascii=False)
+        check("DIRECT compare packet under 1800 chars", len(blob) < 1800)
 
     large_diff = route_task(cfg, "review this diff", ["repo://."])
     check("large-repo diff REDUCE", large_diff.tier == "reduce")
