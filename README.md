@@ -64,17 +64,16 @@ rien à changer en cas de bascule de modèle.
 ### Choix du modèle
 
 Banc comparatif sur les mêmes épreuves (dérivation de motifs, synthèses, JSON difficile), à code
-identique, sur une machine 48 Go :
+identique :
 
 | Modèle                               | Exactitude | Banc de 15 tours | Observation                                        |
 | ------------------------------------ | ---------- | ---------------- | -------------------------------------------------- |
 | Qwen3.6-35B-A3B 4-bit (20 Go)        | 15/15      | 43 s             | Motifs dérivés plus sélectifs, réponses plus courtes |
 | Ornith-1.5-35B-A3B 4-bit (19,5 Go)   | 14/15      | 98 s             | Modèle « reasoning », plus lent, moins déterministe  |
-| Gemma-4-26B-A4B 8-bit (28 Go)        | non chargé | non chargé       | Refusé par le garde-fou mémoire du serveur           |
 
 Un modèle MoE non-reasoning d'environ 20 Go est le bon profil : les tâches du local-agent sont de la
-synthèse encadrée, la réflexion préalable coûte des secondes sans gagner en justesse. Permuter se fait
-sans redémarrage : `POST /v1/unload-model` puis `POST /v1/load-model {"model": "..."}`.
+synthèse encadrée, la réflexion préalable coûte des secondes sans gagner en justesse. Avec `mlx-serve`,
+permuter se fait sans redémarrage : `POST /v1/unload-model` puis `POST /v1/load-model {"model": "..."}`.
 
 ## Emplacement et périmètre
 
@@ -300,18 +299,14 @@ donne un temps trompeusement bas. Ne comparer que des requêtes distinctes.
 
 ## Limites connues
 
-- Une analyse de 8 lots prend quelques minutes sur un modèle 35B quantifié : à réserver aux tâches de
-  fond, pas aux allers-retours interactifs.
-- `search` dépend de la qualité des motifs déduits de la question. Quand le modèle devine des noms de
-  symboles qui n'existent pas, un repli lexical prend le relais, mais avec moins de précision : préciser
-  un `path` ou des `globs` améliore nettement le résultat.
-- **Une question française sur un code aux identifiants anglais dépend d'un pont lexical.** Plusieurs
-  mécanismes le construisent : traduction des notions par le modèle, adaptation au langage dominant du
-  dépôt, radicaux racinisés des identifiants proposés, seconde dérivation quand la moisson est maigre.
-  Il reste des questions purement descriptives qui échouent : nommer le symbole quand on le connaît, ou
-  viser un `path` plus étroit.
-- `local_fix` réécrit un fichier entier (via une proposition transactionnelle), ce qui le limite aux
+- Un appel qui atteint le modèle coûte 5 à 10 secondes, une analyse au plafond des 8 lots environ une
+  minute : c'est un outil de tâches de fond, pas d'allers-retours interactifs.
+- **La recherche dépend du pont lexical entre la question et les identifiants du code.** Plusieurs
+  mécanismes le construisent (traduction des notions, adaptation au langage dominant du dépôt, radicaux
+  des identifiants proposés, seconde dérivation quand la moisson est maigre), mais une question purement
+  descriptive sans aucun terme du code peut encore échouer. Nommer le symbole quand on le connaît, ou
+  resserrer le `path` et les `globs`.
+- `local_fix` fait réécrire le fichier entier par le modèle, même en mode transactionnel : réservé aux
   fichiers de moins de 40 000 caractères et aux consignes réellement mécaniques.
-- Les contrôles du preset Symfony passent par `docker compose exec`, donc Docker doit être démarré.
-- `php -l` est le seul contrôle syntaxique automatique. Sans lui, l'écriture est acceptée sur la seule
-  vraisemblance du contenu.
+- Le contrôle syntaxique après écriture n'existe que pour PHP (`php -l`, qui suppose Docker démarré sur
+  le preset Symfony). Pour les autres langages, seule la vraisemblance du contenu est vérifiée.
