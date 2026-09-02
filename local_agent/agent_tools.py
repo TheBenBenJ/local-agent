@@ -621,12 +621,14 @@ def _query_data(ctx: ToolContext, arguments: dict) -> str:
 
 def _fetch_issue(ctx: ToolContext, arguments: dict) -> str:
     payload = jira_provider.fetch(str(arguments["key"]), repo_root=ctx.config.repo_root)
+    ctx.found = ctx.found or bool(payload.get("configured") and not payload.get("error"))
     identifier = ctx.remember("jira", source=str(arguments["key"]), summary=str(payload.get("goal") or payload.get("error") or ""), payload=payload)
     return _json({"evidence": identifier, **payload})
 
 
 def _fetch_page(ctx: ToolContext, arguments: dict) -> str:
     payload = confluence_provider.fetch(str(arguments["page"]), repo_root=ctx.config.repo_root)
+    ctx.found = ctx.found or bool(payload.get("configured") and not payload.get("error"))
     identifier = ctx.remember(
         "doc",
         source=str(arguments["page"]),

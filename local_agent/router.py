@@ -183,6 +183,18 @@ def initial_action_hint(
         }
     if images:
         return "inspect_image", {"path": images[0].reference}
+    tickets = [item for item in sources if item.scheme == "jira"]
+    if tickets:
+        return "fetch_issue", {"key": tickets[0].reference}
+    pages = [item for item in sources if item.scheme == "confluence"]
+    if pages:
+        return "fetch_page", {"page": pages[0].reference}
+    tables = [item for item in sources if item.scheme == "data"]
+    if tables:
+        return "query_data", {"path": tables[0].reference}
+    docs = [item for item in sources if item.scheme == "docs"]
+    if docs:
+        return "get_rules", {"task": docs[0].reference}
     blob = task or ""
     if re.search(r"\b(list files?|ls\b)", blob, re.IGNORECASE):
         focus = next(

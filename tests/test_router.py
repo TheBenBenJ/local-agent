@@ -94,6 +94,16 @@ def main() -> None:
     check("explicit symbol DIRECT", symbol.tier == "direct")
     check("reason cites Store", "Store" in symbol.reason)
 
+    ticket = route_task(cfg, "Summarize the ticket goal and status.", ["jira://LYSI-1"])
+    check("jira-only DIRECT", ticket.tier == "direct")
+    check("jira first tool fetch_issue", ticket.first_tool == "fetch_issue")
+    check("jira first key", (ticket.first_args or {}).get("key") == "LYSI-1")
+    wiki = route_task(cfg, "Summarize this page.", ["confluence://1323499521"])
+    check("confluence-only DIRECT", wiki.tier == "direct")
+    check("confluence first tool fetch_page", wiki.first_tool == "fetch_page")
+    mixed = route_task(cfg, "Summarize the ticket using the repository.", ["jira://LYSI-1", "repo://local_agent"])
+    check("jira plus repo AGENT", mixed.tier == "agent")
+
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)
         log = work / "app.log"
@@ -121,6 +131,10 @@ def main() -> None:
         check("REDUCE summary cites cause", "InvoiceService" in report.summary)
         check("REDUCE locations relative", any(str(loc).startswith("app.log") for loc in report.locations))
         check("REDUCE no abs location", not any(str(loc).startswith("/") for loc in report.locations))
+        from local_agent.agent import _packet_hit
+
+        abs_span = f"{log.resolve()}:1-4"
+        check("packet_hit keeps span", _packet_hit(scoped, abs_span) == "app.log:1-4")
         check("REDUCE extract skips LLM", report.stats.get("local_llm_calls") == 0)
         check("REDUCE tier", report.stats.get("tier") == "reduce")
         from local_agent.store import Store

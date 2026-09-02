@@ -11,6 +11,7 @@ Numbers in BENCHMARKS.md must come from a run of this module, never from inventi
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -25,6 +26,15 @@ FIXTURES = ROOT / "benchmarks" / "fixtures"
 RECETTE = Path(
     "/Users/benjaminmille/Documents/Projects/lysi/temp/56XX/5662/contexte/pieces_jointes"
 )
+LYSI = Path("/Users/benjaminmille/Documents/Projects/lysi")
+
+
+def _live_root() -> Path | None:
+    raw = os.environ.get("LOCAL_AGENT_LIVE_ROOT")
+    if raw:
+        path = Path(raw).expanduser().resolve()
+        return path if path.is_dir() else None
+    return LYSI if LYSI.is_dir() else None
 
 
 def tokens_from_chars(chars: int) -> int:  # noqa: F811
@@ -359,6 +369,76 @@ def _case_patch(config: Config, client: MlxClient | None, no_llm: bool) -> dict:
     }
 
 
+def _case_jira_live(config: Config, client: MlxClient | None, no_llm: bool) -> dict:
+    from .providers import atlassian
+
+    key = os.environ.get("LOCAL_AGENT_LIVE_JIRA", "LYSI-5177")
+    row: dict = {"id": "D-jira-live", "task": "Summarize the ticket goal and status.", "key": key}
+    root = _live_root()
+    if root is None:
+        row["skipped"] = "no live repo with Atlassian credentials"
+        return row
+    status = atlassian.status(root)
+    if not status.get("configured"):
+        row["skipped"] = "jira not configured"
+        return row
+    if no_llm or client is None:
+        row["skipped"] = "no_llm"
+        return row
+    scoped = Config(repo_root=root, autonomy="read_only", max_runtime=60, max_steps=4, vision=False)
+    report, error = _run_local(scoped, client, row["task"], [f"jira://{key}"])
+    if report is None:
+        row["error"] = error
+        return row
+    blob = json.dumps(report.to_dict(), ensure_ascii=False)
+    row["local_visible_chars"] = len(blob)
+    row["latency_s"] = report.stats.get("latency_s")
+    row["expected_tier"] = "direct"
+    row["actual_tier"] = report.stats.get("tier")
+    row["routing_correct"] = row["actual_tier"] == row["expected_tier"]
+    row["local_llm_calls"] = report.stats.get("local_llm_calls")
+    row["body_leaked"] = "acceptance_criteria_verbatim" in blob
+    row["quality"] = _score(blob, [key.split("-")[0], key.split("-")[-1] if "-" in key else key])
+    row.update(_interception(8_000, len(blob)))
+    row["note"] = "live Jira HTTP; description stays in the store"
+    return row
+
+
+def _case_confluence_live(config: Config, client: MlxClient | None, no_llm: bool) -> dict:
+    from .providers import atlassian
+
+    page = os.environ.get("LOCAL_AGENT_LIVE_CONFLUENCE", "1323499521")
+    row: dict = {"id": "D-confluence-live", "task": "Summarize this page.", "page": page}
+    root = _live_root()
+    if root is None:
+        row["skipped"] = "no live repo with Atlassian credentials"
+        return row
+    status = atlassian.status(root)
+    if not status.get("configured"):
+        row["skipped"] = "confluence not configured"
+        return row
+    if no_llm or client is None:
+        row["skipped"] = "no_llm"
+        return row
+    scoped = Config(repo_root=root, autonomy="read_only", max_runtime=60, max_steps=4, vision=False)
+    report, error = _run_local(scoped, client, row["task"], [f"confluence://{page}"])
+    if report is None:
+        row["error"] = error
+        return row
+    blob = json.dumps(report.to_dict(), ensure_ascii=False)
+    row["local_visible_chars"] = len(blob)
+    row["latency_s"] = report.stats.get("latency_s")
+    row["expected_tier"] = "direct"
+    row["actual_tier"] = report.stats.get("tier")
+    row["routing_correct"] = row["actual_tier"] == row["expected_tier"]
+    row["local_llm_calls"] = report.stats.get("local_llm_calls")
+    row["body_leaked"] = '"body"' in blob
+    row["quality"] = _score(blob, [page])
+    row.update(_interception(8_000, len(blob)))
+    row["note"] = "live Confluence HTTP; storage body stays in the store"
+    return row
+
+
 CASES = {
     "repo": _case_repo,
     "logs": _case_logs,
@@ -367,6 +447,11 @@ CASES = {
     "tests": _case_tests,
     "patch": _case_patch,
     "cache": _case_cache,
+}
+
+LIVE_CASES = {
+    "jira-live": _case_jira_live,
+    "confluence-live": _case_confluence_live,
 }
 
 
@@ -396,13 +481,16 @@ def run(config: Config, client: MlxClient, kind: str = "all", *, no_llm: bool = 
 
         return classify_jsonl(candidate)
     selected = list(CASES) if kind in {"all", "", None} else [kind]
-    unknown = [item for item in selected if item not in CASES]
+    if kind == "live":
+        selected = list(LIVE_CASES)
+    catalog = {**CASES, **LIVE_CASES}
+    unknown = [item for item in selected if item not in catalog]
     if unknown:
-        raise ValueError(f"unknown benchmark kind {unknown}, available: {', '.join(CASES)}")
+        raise ValueError(f"unknown benchmark kind {unknown}, available: {', '.join(list(CASES) + ['live'] + list(LIVE_CASES))}")
     started = time.monotonic()
     rows = []
     for name in selected:
-        rows.append(CASES[name](config, None if no_llm else client, no_llm))
+        rows.append(catalog[name](config, None if no_llm else client, no_llm))
     elapsed = round(time.monotonic() - started, 2)
     quality = [item.get("quality") for item in rows if item.get("quality")]
     correct = sum(1 for item in quality if item.get("correct"))
@@ -429,6 +517,7 @@ def run(config: Config, client: MlxClient, kind: str = "all", *, no_llm: bool = 
             "Claude billed tokens are not read from Cursor/Claude Code; that API is not a supported public surface.",
             "interception_rate is vs the baseline of this harness, not vs a full Claude session.",
             "Houtini / delegate-local were not installed; the differentiator measured here is source interception before Claude.",
+            "kind=live hits Jira/Confluence when LOCAL_AGENT_LIVE_ROOT (or the lysi checkout) has credentials. all does not.",
         ],
     }
     FIXTURES.mkdir(parents=True, exist_ok=True)

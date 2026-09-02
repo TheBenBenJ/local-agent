@@ -16,10 +16,9 @@ from .config import Config, get_config
 from .files import GuardrailError, ensure_usable_root
 from .mlx import MlxClient, MlxError
 from .report import Report, clamp, render_markdown
+from .version import SERVER_NAME, SERVER_VERSION, describe
 from . import agent, compare, doctor, edit, ocr, shell, store, tasks
 
-SERVER_NAME = "local-agent"
-SERVER_VERSION = "1.3.0"
 DEFAULT_PROTOCOL = "2024-11-05"
 SUPPORTED_PROTOCOLS = {"2024-11-05", "2025-03-26", "2025-06-18"}
 
@@ -423,6 +422,7 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             checks = [f"unreadable: {error}"]
         payload = {
             "mlx": client.ping(),
+            "server": describe(),
             "repo_root_state": root_state,
             "checks_disponibles": checks,
             "ocr": ocr.backend_status(),

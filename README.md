@@ -278,12 +278,12 @@ Par variables d'environnement, ou via un fichier `~/.local-agent/local-agent.env
 
 Les anciens noms `MLX_*` restent lus en rétrocompatibilité quand la variante `LOCAL_LLM_*` est absente.
 
-Jira : `local_task` avec `jira://LYSI-1234` lit le ticket. Confluence Cloud : `confluence://123456`
-ou `confluence://SPACE/Title` (même jeton Atlassian que Jira). Les identifiants ne sont pas dans
-local-agent. Ils viennent du `.claude/.env.local` du dépôt visé (`JIRA_URL`, `JIRA_USERNAME`,
-`JIRA_API_TOKEN`, le format déjà utilisé par les skills lysi), ou de `JIRA_BASE_URL` /
-`JIRA_TOKEN` / `JIRA_EMAIL` dans l'environnement. Le jeton ne figure pas dans `doctor` ni dans
-les rapports.
+Jira : `local_task` avec `jira://LYSI-1234` lit le ticket (DIRECT, `fetch_issue`, zéro LLM local).
+Confluence Cloud : `confluence://123456` ou `confluence://SPACE/Title` (DIRECT, `fetch_page`, même
+jeton Atlassian). Les identifiants ne sont pas dans local-agent. Ils viennent du
+`.claude/.env.local` du dépôt visé (`JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN`, le format déjà
+utilisé par les skills lysi), ou de `JIRA_BASE_URL` / `JIRA_TOKEN` / `JIRA_EMAIL` dans
+l'environnement. Le jeton ne figure pas dans `doctor` ni dans les rapports.
 
 ## Contrôles projet par dépôt
 
@@ -365,6 +365,7 @@ de code autour des fichiers les plus denses. `analyze` fait un map par lot suivi
 ## Sonde de bon fonctionnement
 
 ```bash
+python3 ~/.local-agent/tests/run_all.py               # tous les tests/test_*.py
 python3 ~/.local-agent/tests/mcp_probe.py          # 7 appels réels, ~30 s
 python3 ~/.local-agent/tests/mcp_probe.py --quick  # ping et recherche uniquement
 ```
@@ -375,7 +376,9 @@ appliqué et qu'aucune réponse ne dépasse 4 000 caractères. Code de sortie no
 ## Bancs de mesure
 
 ```bash
+~/.local-agent/bin/local-agent ping                   # mlx + server.git_head (CLI, pas le MCP Cursor)
 ~/.local-agent/bin/local-agent benchmark all          # PROVE IT harness, writes var/last-benchmark.json
+~/.local-agent/bin/local-agent benchmark live         # Jira + Confluence HTTP if credentials exist
 ~/.local-agent/bin/local-agent benchmark logs
 ~/.local-agent/bin/local-agent benchmark all --no-llm # baselines + deterministic tools only
 python3 ~/.local-agent/tests/bench.py                 # older per-tool volume bench

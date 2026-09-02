@@ -19,6 +19,8 @@ usage-totals.json
 patches/
 evidence/
 context.db
+context.db-shm
+context.db-wal
 session.id
 traces/
 benchmarks/fixtures/

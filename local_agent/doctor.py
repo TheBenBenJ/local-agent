@@ -10,6 +10,7 @@ from pathlib import Path
 from . import ocr, shell, store
 from .config import Config
 from .mlx import MlxClient, MlxError
+from .version import describe
 
 
 def check(config: Config, client: MlxClient | None = None) -> dict:
@@ -18,7 +19,9 @@ def check(config: Config, client: MlxClient | None = None) -> dict:
     def add(name: str, ok: bool, detail: str) -> None:
         items.append({"name": name, "ok": ok, "detail": detail})
 
+    identity = describe()
     add("python", True, sys.version.split()[0])
+    add("code", bool(identity.get("git_head") or identity.get("version")), f"{identity.get('version')} {identity.get('git_head')}".strip())
     add("rg", bool(shutil.which("rg")), shutil.which("rg") or "ripgrep missing")
     add("git", bool(shutil.which("git")), shutil.which("git") or "git missing")
     mcp = Path(__file__).resolve().parent.parent / "bin" / "local-agent-mcp"

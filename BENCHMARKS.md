@@ -21,8 +21,13 @@ Previous PROVE IT run (same day, before DIRECT/REDUCE): tiny repo 6.9 s / partia
 | Screenshot + `repo://compare.py` (unit) | AGENT | AGENT | yes | n/a (unit) |
 | Two images only (unit) | DIRECT | DIRECT | yes | n/a (unit) |
 | Change the auth middleware (unit) | CLAUDE | CLAUDE | yes | n/a (unit) |
+| Jira-only first tool `fetch_issue` (unit) | DIRECT | DIRECT | yes | n/a (unit) |
+| Confluence-only first tool `fetch_page` (unit) | DIRECT | DIRECT | yes | n/a (unit) |
+| Jira + repo (unit) | AGENT | AGENT | yes | n/a (unit) |
+| Live Jira `jira://LYSI-5177` | DIRECT | DIRECT | yes | 0.5 s (0 LLM, HTTP fetch) |
+| Live Confluence `confluence://1323499521` | DIRECT | DIRECT | yes | 0.3 s (0 LLM, HTTP fetch) |
 
-Harness routing accuracy on scored cases A+B: **2/2**. Unit routing cases: **8/8**. Combined routing accuracy on this set: **100%**.
+Harness routing accuracy on scored cases A+B: **2/2**. Unit routing cases: **11/11**. Live Atlassian: **2/2**. Combined routing accuracy on this set: **100%**.
 
 `avoidable_local_llm_calls` (DIRECT that still called a local LLM): **0** on the tiny-repo harness and on the DIRECT unit tests.
 
@@ -41,6 +46,8 @@ Harness routing accuracy on scored cases A+B: **2/2**. Unit routing cases: **8/8
 | C same pair, AGENT 35B (same day) | 9 563 tok | 2 075 tok | 7 488 | 78.3% | yes (`DIV`, `HCP`) | 13.6 s |
 | C same pair, pixel+OCR compare, no LLM | 9 563 tok | 1 400 tok | 8 163 | 85% | partial (`pixel`, not `DIV`) | 0.72 s |
 | E Whitelisted failing check | 20 000 tok (assumed dump) | 86 tok | 19 914 | 99.6% | yes (`TypeError`, `total`) | 0.017 s |
+| Live Jira LYSI-5177, DIRECT `fetch_issue` | 2 000 tok (router estimate) | 172 tok (JSON packet) | n/a | n/a | yes (key + goal in packet; description stayed in the store) | 0.5 s |
+| Live Confluence page 1323499521, DIRECT `fetch_page` | 2 000 tok (router estimate) | 105 tok (JSON packet) | n/a | n/a | yes (page id in packet; storage body stayed in the store) | 0.3 s |
 
 Notes:
 
@@ -48,6 +55,8 @@ Notes:
 - Case B no longer calls a local LLM when high-signal excerpts exist (0.04 s extract vs 4–5 s LLM). The planted cause stays in runtime evidence. `rg ERROR` remains ~800× faster. A 35B/9B sentence on that digest is optional, not the default.
 - Case C with `image://` + `repo://` is routed AGENT (multi-source). On the 9B: 5.7 s, 3 local LLM calls, same `DIV`/`HCP` hits as the 35B at 13.6 s. Deterministic compare without a repo pointer remains faster (0.72 s) and smaller, but misses `DIV`.
 - Case E baseline A (80 kB) is still an assumed PHPUnit-style dump.
+- Live Jira: credentials from lysi `.claude/.env.local`, base `https://6tmgroup.atlassian.net`. Before the first-tool fix, jira-only DIRECT called `search_repo` and never fetched the issue. Interception is not scored: the router still estimates 8 kB / 2 000 tok, not the real issue payload.
+- Live Confluence: same token, page id `1323499521`. DIRECT, 0 LLM, 0.3 s, 105 tok JSON. `"body"` did not appear in the packet. Same 8 kB estimate as Jira, not scored as interception.
 
 ## Quality evaluation (keyword recall, scale 0–4)
 
@@ -143,7 +152,8 @@ Not captured.
 
 ## What was not run
 
-- Live Jira fetch inside this harness.
+- Live Jira fetch: **done** 2 September 2026, `jira://LYSI-5177`. DIRECT, 0 local LLM, 0.5 s, JSON packet 689 B (~172 tok). `acceptance_criteria_verbatim` stayed in the evidence store.
+- Live Confluence fetch: **done** 2 September 2026, `confluence://1323499521`. DIRECT, 0 local LLM, 0.3 s, JSON packet 423 B (~105 tok). Storage body stayed in the store.
 - Live `autonomy=patch` against mlx-serve (scripted in `tests/test_patch_workflow.py`).
 - Sequential small-model vs 35B: **done** (9B alone), including recette AGENT vision.
 - Full 18 M Claude recette session as **billed** tokens (jsonl classifier exists; the API bill does not).
@@ -161,8 +171,8 @@ Default local model: **Qwen3.5-9B-MLX-4bit**.
 
 ## Next five priorities
 
-1. Capture billed Claude tokens (usage API or export), not only jsonl on disk.
-2. Restart MCP clients on schema 1.3.0 (`local_task` routing description).
+1. Capture billed Claude tokens (usage API or export). Still not available: there is no supported public surface for Cursor/Claude Code bills. jsonl on disk is not the bill.
+2. Restart MCP clients after this tree. CLI `local-agent ping` already returns `server.git_head`. `local_ping` stays stale until the client restarts.
 3. Keep pixel/SHA256 labels in the compare packet. Session A is 254 tok with findings; do not strip the verdict to recover more.
-4. Live Jira fetch inside the harness (still a fixture).
-5. DIRECT 101 tok vs 74 raw (`rg` 51). Further cuts drop STATUS or the hit line.
+4. Live `autonomy=patch` against mlx-serve (scripted only).
+5. DIRECT 101 tok vs 74 raw (`rg` 51). Further cuts drop STATUS or the hit line. Accepted.

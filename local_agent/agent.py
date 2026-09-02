@@ -303,14 +303,22 @@ def _fallback_search(config: Config, client: MlxClient, ctx: agent_tools.ToolCon
     }
 
 
-def _packet_path(ctx: agent_tools.ToolContext, raw: str) -> str:
+def _packet_hit(config: Config, raw: str) -> str:
     text = str(raw or "").strip()
     if not text:
         return ""
-    candidate = Path(text).expanduser()
-    if not candidate.is_absolute():
+    if not text.startswith("/"):
         return text
-    return relative_to_root(ctx.config, candidate)
+    path, span = text, ""
+    if ":" in text:
+        left, right = text.rsplit(":", 1)
+        if right.replace("-", "").isdigit():
+            path, span = left, ":" + right
+    return relative_to_root(config, Path(path)) + span
+
+
+def _packet_path(ctx: agent_tools.ToolContext, raw: str) -> str:
+    return _packet_hit(ctx.config, raw)
 
 
 def _facts_from_evidence(ctx: agent_tools.ToolContext) -> tuple[list[str], list[str], list[str], str]:
@@ -451,7 +459,9 @@ def _run_direct(ctx: agent_tools.ToolContext, task: str, decision: router.RouteD
     ctx.preprocess_ms += time.monotonic() - started
     findings, files, locations, root = _facts_from_evidence(ctx)
     tool_findings = [str(item) for item in (tool_payload.get("findings") or []) if str(item)]
-    tool_summary = str(tool_payload.get("summary") or "").strip()
+    tool_summary = str(
+        tool_payload.get("summary") or tool_payload.get("goal") or tool_payload.get("title") or ""
+    ).strip()
     return {
         "status": "success",
         "summary": tool_summary or (locations[0] if locations else (findings[0] if findings else f"DIRECT: {decision.reason}")),
@@ -684,6 +694,8 @@ def run_task(
         [str(item) for item in (payload.get("files") or [])],
         [str(item) for item in (payload.get("locations") or [])],
     )
+    files = [_packet_hit(config, item) for item in files if item]
+    locations = [_packet_hit(config, item) for item in locations if item]
     if decision.tier == "direct":
         extra = f"\nTESTS: {tests}" if tests else ""
         summary = (
