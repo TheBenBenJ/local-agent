@@ -489,7 +489,7 @@ def _inspect_log(ctx: ToolContext, arguments: dict) -> str:
         ctx.found = ctx.found or bool(matches)
         return _json({"evidence": identifier, "total": total, "matches": matches[:25]})
     payload = extract.extract_log(target)
-    ctx.source_chars += int(payload.get("bytes") or 0)
+    ctx.source_chars += sum(len(item.get("content") or "") for item in (payload.get("excerpts") or []))
     ctx.found = ctx.found or bool(payload.get("hits"))
     digest = sha256_file(target) if target.is_file() else ""
     identifier = ctx.remember(

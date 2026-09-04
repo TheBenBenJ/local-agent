@@ -125,6 +125,9 @@ diff --git a/src/Foo.php b/src/Foo.php
     check("pied tenant en une ligne", len(footer.strip().splitlines()) == 1)
     off = savings_footer(4000, 400, 0, session_saved=4000, session_compounded=0, lifetime_saved=4000, lifetime_compounded=0)
     check("pied sans estime", "LOCAL_AGENT_COMPOUND_TURNS=0" in off)
+    empty = savings_footer(400, 400, 25, session_saved=0, session_compounded=0, lifetime_saved=0, lifetime_compounded=0)
+    check("pied réponse négative", "no content avoided" in empty)
+    check("pied négatif tient en une ligne", len(empty.strip().splitlines()) == 1)
 
     print("tous les contrôles de revue de diff passent")
 

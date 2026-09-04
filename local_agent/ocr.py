@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import shutil
+import struct
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
@@ -37,12 +38,94 @@ BLOCK_Y_GAP = 0.06
 BOX_PAD = 0.04
 MAX_REGIONS = 12
 MAX_EMBED_BYTES = 400_000
+# Client attach cost: resize so the long side ≤ 1568, then (w×h)/750, cap ~1600 tok.
+ATTACH_MAX_SIDE = 1568
+ATTACH_MAX_TOKENS = 1600
 SALIENT = re.compile(
     r"erreur|error|warning|disabled|obligatoire|interdit|exception|404|échec|echec|invalid",
     re.IGNORECASE,
 )
 
 OcrRunner = Callable[[list[Path]], list[dict]]
+
+
+def attach_tokens(width: int, height: int) -> int:
+    """Tokens Claude would bill for attaching this raster, not the file size."""
+    width = max(1, int(width))
+    height = max(1, int(height))
+    long_side = max(width, height)
+    if long_side > ATTACH_MAX_SIDE:
+        scale = ATTACH_MAX_SIDE / long_side
+        width = max(1, int(round(width * scale)))
+        height = max(1, int(round(height * scale)))
+    return max(1, min(ATTACH_MAX_TOKENS, (width * height) // 750))
+
+
+def image_dimensions(path: Path) -> tuple[int, int] | None:
+    """Pixel size from the file header. None if the format is not parsed."""
+    try:
+        data = path.read_bytes()[:65536]
+    except OSError:
+        return None
+    if len(data) >= 24 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        width, height = struct.unpack(">II", data[16:24])
+        return int(width), int(height)
+    if data[:2] == b"\xff\xd8":
+        return _jpeg_size(data)
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        width, height = struct.unpack("<HH", data[6:10])
+        return int(width), int(height)
+    if data[:2] == b"BM" and len(data) >= 26:
+        width, height = struct.unpack("<ii", data[18:26])
+        return int(width), abs(int(height)) or 1
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+        return _webp_size(data)
+    return None
+
+
+def _jpeg_size(data: bytes) -> tuple[int, int] | None:
+    index = 2
+    length = len(data)
+    while index + 9 < length:
+        if data[index] != 0xFF:
+            return None
+        while index < length and data[index] == 0xFF:
+            index += 1
+        if index >= length:
+            return None
+        marker = data[index]
+        index += 1
+        if marker in (0xD8, 0xD9):
+            continue
+        if index + 2 > length:
+            return None
+        block = int.from_bytes(data[index : index + 2], "big")
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3) and index + 7 <= length:
+            height = int.from_bytes(data[index + 3 : index + 5], "big")
+            width = int.from_bytes(data[index + 5 : index + 7], "big")
+            return int(width), int(height)
+        index += block
+    return None
+
+
+def _webp_size(data: bytes) -> tuple[int, int] | None:
+    kind = data[12:16]
+    if kind == b"VP8X" and len(data) >= 30:
+        width = 1 + int.from_bytes(data[24:27], "little")
+        height = 1 + int.from_bytes(data[27:30], "little")
+        return width, height
+    if kind == b"VP8 " and len(data) >= 30:
+        width = int.from_bytes(data[26:28], "little") & 0x3FFF
+        height = int.from_bytes(data[28:30], "little") & 0x3FFF
+        return width, height
+    return None
+
+
+def attach_source_chars(path: Path) -> int:
+    """Character units for the savings counter: attach tokens × 4, never file bytes."""
+    dims = image_dimensions(path)
+    tokens = attach_tokens(*dims) if dims else ATTACH_MAX_TOKENS
+    return tokens * 4
 
 SWIFT_SOURCE = Path(__file__).resolve().parent / "ocr_vision.swift"
 OCR_BINARY = Path(__file__).resolve().parent.parent / "var" / "local-ocr"
@@ -474,7 +557,7 @@ def read_images(
         "table from bounding boxes. Crop a region with local_image_crop when layout or colour "
         "matters; do not attach the full screenshot."
     )
-    source_chars = sum(int(item.stat().st_size * 4 / 3) for item in resolved)
+    source_chars = sum(attach_source_chars(item) for item in resolved)
     report = Report(
         title="Image text (OCR)",
         summary=summary,
@@ -535,7 +618,7 @@ def crop_region(config: Config, raw_id: str) -> tuple[Report, Path]:
             "backend": "crop",
             "original_octets": original,
             "crop_octets": destination.stat().st_size,
-            "source_caracteres": int(original * 4 / 3),
+            "source_caracteres": attach_source_chars(source),
         },
         details=f"crop={destination}",
     )

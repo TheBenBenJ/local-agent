@@ -14,8 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from local_agent.config import get_config  # noqa: E402
 from local_agent.files import GuardrailError  # noqa: E402
 from local_agent.ocr import (  # noqa: E402
+    attach_source_chars,
+    attach_tokens,
     collect_paths,
     crop_region,
+    image_dimensions,
     list_image_files,
     make_regions,
     read_images,
@@ -129,7 +132,11 @@ def main() -> None:
 
         report = read_images(config, str(image), task="erreur", runner=runner)
         check("n'appelle pas le LLM", report.stats.get("backend") == "injected")
-        check("compte la source en équivalent base64", report.stats.get("source_caracteres") == int(len(PNG_1X1) * 4 / 3))
+        check("compte la source au coût d'attache", report.stats.get("source_caracteres") == attach_source_chars(image))
+        check("png 1x1 : 1 token d'attache", attach_tokens(1, 1) == 1)
+        check("png 1x1 : dimensions lues", image_dimensions(image) == (1, 1))
+        check("full-hd plafonné à 1600 tok", attach_tokens(1920, 1080) == 1600)
+        check("100x100 = 13 tok", attach_tokens(100, 100) == 13)
         check("filtre task sans modèle", any("champ obligatoire" in item for item in report.findings))
         check("détail contient le texte lu", "Type d'envoi" in report.details)
         check("paquet de preuves non vide", bool(report.evidence))

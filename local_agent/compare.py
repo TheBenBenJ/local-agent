@@ -142,7 +142,6 @@ def compare_images(config: Config, reference: str, current: str, *, client=None)
                 ),
             },
         )
-    source = left.stat().st_size + right.stat().st_size
     return Report(
         title="Image compare",
         summary=summary,
@@ -151,7 +150,7 @@ def compare_images(config: Config, reference: str, current: str, *, client=None)
         evidence=evidence,
         stats={
             "backend": backend,
-            "source_caracteres": int(source * 4 / 3),
+            "source_caracteres": ocr.attach_source_chars(left) + ocr.attach_source_chars(right),
             "sha_left": hash_left[:12],
             "sha_right": hash_right[:12],
         },

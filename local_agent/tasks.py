@@ -784,7 +784,7 @@ def analyze_logs(
         return Report(
             title="Log analysis",
             summary=f"No error line found in {path} ({size} bytes scanned).",
-            stats={"matches": 0},
+            stats={"matches": 0, "scanned_octets": size, "source_caracteres": 0},
             next_actions=["Pass explicit patterns if the log format is unusual"],
         )
 

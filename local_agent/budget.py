@@ -53,7 +53,13 @@ def savings_footer(
     raw = tokens_from_chars(source_chars)
     visible = tokens_from_chars(returned_chars)
     avoided = max(0, raw - visible)
-    ligne = f"\n\nLocal-agent: ~{raw} tok read locally, ~{visible} returned, ~{avoided} avoided this call"
+    if avoided == 0:
+        ligne = (
+            f"\n\nLocal-agent: ~{raw} tok read locally, ~{visible} returned, "
+            "no content avoided (negative answer or source already smaller than the packet)"
+        )
+    else:
+        ligne = f"\n\nLocal-agent: ~{raw} tok read locally, ~{visible} returned, ~{avoided} avoided this call"
     if remaining_turns <= 0:
         return ligne + " (exposure off: LOCAL_AGENT_COMPOUND_TURNS=0). Totals: local_metrics."
     exposure = tokens_from_chars(billed_chars(avoided * 4, remaining_turns))
