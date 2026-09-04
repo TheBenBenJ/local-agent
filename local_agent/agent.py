@@ -37,6 +37,28 @@ def infer_why(sources: list, task: str) -> str:
     return "repo_exploration"
 
 
+def _stored_chars(payload: object) -> int:
+    """Taille du texte gardé en local, pour distinguer un paquet de sa source."""
+    if isinstance(payload, str):
+        return len(payload)
+    if isinstance(payload, dict):
+        return sum(_stored_chars(value) for value in payload.values())
+    if isinstance(payload, list):
+        return sum(_stored_chars(item) for item in payload)
+    return 0
+
+
+def _expand_hint(evidence: list[dict]) -> list[str]:
+    """Un paquet muet se lit comme une réponse complète : dire ce qui reste en local."""
+    ids = [str(item.get("id")) for item in evidence if item.get("more") and item.get("id")]
+    if not ids:
+        return []
+    return [
+        "The packet is a preview, not the source: "
+        f"local_expand {' '.join(ids[:4])} returns the stored content in full."
+    ]
+
+
 def _packet_item(db: Store, identifier: str) -> dict:
     row = db.get(identifier)
     payload = row.get("payload") or {}
@@ -59,11 +81,14 @@ def _packet_item(db: Store, identifier: str) -> dict:
         extra = f"{loc} {text}".strip()
         if extra and extra not in preview:
             preview = f"{preview}; {extra}" if preview else extra
+    limit = 400 if payload.get("high_signal") else 220
     item = {
         "id": identifier,
         "type": row.get("type") or "evidence",
-        "content": preview[:400] if payload.get("high_signal") else preview[:220],
+        "content": preview[:limit],
     }
+    if _stored_chars(payload) > limit + 400:
+        item["more"] = True
     source = str(row.get("source") or "").strip()
     if source:
         item["source"] = source
@@ -788,7 +813,7 @@ def run_task(
     )
     if decision.tier == "direct":
         report.title = ""
-        report.next_actions = []
+        report.next_actions = _expand_hint(report.evidence)
         report.risks = [] if computed_risk == "LOW" and status != "needs_claude" else report.risks
         if locations:
             report.findings = []
