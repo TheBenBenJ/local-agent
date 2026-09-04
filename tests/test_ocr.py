@@ -19,6 +19,7 @@ from local_agent.ocr import (  # noqa: E402
     collect_paths,
     crop_region,
     image_dimensions,
+    image_id_for,
     list_image_files,
     make_regions,
     read_images,
@@ -26,6 +27,7 @@ from local_agent.ocr import (  # noqa: E402
     rows_from_lines,
 )
 from local_agent.evidence import parse_region_id  # noqa: E402
+from local_agent.store import expand as expand_evidence  # noqa: E402
 
 # PNG 1x1 : assez pour les garde-fous, pas pour un vrai OCR.
 PNG_1X1 = bytes.fromhex(
@@ -138,9 +140,15 @@ def main() -> None:
         check("full-hd plafonné à 1600 tok", attach_tokens(1920, 1080) == 1600)
         check("100x100 = 13 tok", attach_tokens(100, 100) == 13)
         check("filtre task sans modèle", any("champ obligatoire" in item for item in report.findings))
-        check("détail contient le texte lu", "Type d'envoi" in report.details)
+        check("inventaire contient le texte lu", "Type d'envoi" in "\n".join(report.findings))
+        check("paquet sans dump OCR", not report.details)
         check("paquet de preuves non vide", bool(report.evidence))
         check("région saillante en premier", report.evidence[0]["salient"] is True)
+        check("au plus 4 régions dans le paquet", len(report.evidence) <= 4)
+        packet_id = image_id_for(image)
+        expanded = expand_evidence(packet_id)
+        check("expand 8-char image id", expanded.get("type") == "image")
+        check("transcript OCR hors paquet", "Type d'envoi" in str((expanded.get("payload") or {}).get("transcript") or ""))
         check("sans client, pas de passe vision", report.stats.get("vision") == "unavailable")
 
     tests_dir = Path(__file__).resolve().parent
@@ -178,7 +186,9 @@ def main() -> None:
         print("  SKIP  OCR Vision (swiftc absent)")
     else:
         live = read_images(config, str(sample))
-        blob = (live.details or "") + "\n".join(live.findings)
+        blob = "\n".join(live.findings)
+        expanded = expand_evidence(image_id_for(sample))
+        blob += str((expanded.get("payload") or {}).get("transcript") or "")
         check("Vision lit le texte rendu", "TypeEnvoiFacture" in blob.replace(" ", ""))
         check("backend Vision sans LLM", live.stats.get("backend") == "macos-vision")
         region_id = (live.evidence or [{}])[0].get("id")

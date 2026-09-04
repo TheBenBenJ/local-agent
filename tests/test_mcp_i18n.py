@@ -53,6 +53,10 @@ def main() -> None:
     check("local_task present", "local_task" in names)
     check("local_expand present", "local_expand" in names)
     check("local_expand mentions CODE-E", "CODE-E" in next(t["description"] for t in TOOLS if t["name"] == "local_expand"))
+    check(
+        "local_expand mentions 8-char image id",
+        "8-char image id" in next(t["description"] for t in TOOLS if t["name"] == "local_expand"),
+    )
     check("local_metrics present", "local_metrics" in names)
     check("local_image_compare present", "local_image_compare" in names)
     check("local_image_compare mentions pixel", "pixel" in next(t["description"] for t in TOOLS if t["name"] == "local_image_compare"))

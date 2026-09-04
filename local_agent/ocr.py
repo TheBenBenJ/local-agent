@@ -10,7 +10,6 @@ import shutil
 import struct
 import subprocess
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 
 from . import evidence, grid, vision
@@ -32,8 +31,8 @@ MAX_IMAGES = 10
 MAX_IMAGE_BYTES = 8_000_000
 MIN_CONFIDENCE = 0.3
 ROW_Y_TOLERANCE = 0.015
-# Trois captures d'admin tiennent ~8 Ko de texte ; le clamp code (900 tokens) tronquerait la troisième.
-IMAGE_OUTPUT_TOKENS = 2000
+# Packet is an inventory. Full OCR lives on disk for local_expand <image_id>.
+MAX_PACKET_REGIONS = 4
 BLOCK_Y_GAP = 0.06
 BOX_PAD = 0.04
 MAX_REGIONS = 12
@@ -141,7 +140,7 @@ def backend_status() -> dict[str, object]:
 
 
 def image_config(config: Config) -> Config:
-    return replace(config, max_output_tokens=max(config.max_output_tokens, IMAGE_OUTPUT_TOKENS))
+    return config
 
 
 def collect_paths(path: str | None, paths: list | None) -> list[str]:
@@ -480,12 +479,12 @@ def read_images(
     by_path = {str(Path(item.get("path") or "").resolve()): item for item in raw_images if isinstance(item, dict)}
 
     findings: list[str] = []
-    details_parts: list[str] = []
     errors: list[str] = []
     evidence_items: list[dict] = []
     pages: list[dict] = []
     line_count = 0
     table_count = 0
+    region_count = 0
     needle = (task or "").strip().lower()
     matched: list[str] = []
 
@@ -501,6 +500,7 @@ def read_images(
         label = relative_to_root(config, file_path)
         image_id = image_id_for(file_path)
         regions = make_regions(image_id, lines)
+        excerpt = grid.render_markdown_table(table) if table else "\n".join(rows)
         evidence.store(
             image_id,
             {
@@ -510,11 +510,18 @@ def read_images(
                 "lines": lines,
                 "regions": regions,
                 "grid": table,
+                "transcript": excerpt,
                 "sha256": hashlib.sha256(file_path.read_bytes()).hexdigest(),
             },
         )
-        evidence_items.extend(regions)
-        excerpt = grid.render_markdown_table(table) if table else "\n".join(rows)
+        region_count += len(regions)
+        packet_regions = [item for item in regions if item.get("salient")][:MAX_PACKET_REGIONS]
+        if not packet_regions:
+            packet_regions = regions[:MAX_PACKET_REGIONS]
+        evidence_items.extend(
+            {**item, "content": str(item.get("content") or "")[:80], "more": True}
+            for item in packet_regions
+        )
         pages.append(
             {
                 "path": file_path,
@@ -538,15 +545,11 @@ def read_images(
                 f"{label} (table {len(table)}x{len(table[0])}, id={image_id}): "
                 + " | ".join(table[0][:8])
             )
-            details_parts.append(
-                "### " + label + f" (`{image_id}`)\n" + grid.render_markdown_table(table)
-            )
         else:
             preview = rows[:8]
             findings.append(
                 f"{label} ({len(rows)} lines, id={image_id}): " + " | ".join(preview)
             )
-            details_parts.append("### " + label + f" (`{image_id}`)\n" + "\n".join(rows))
 
     if matched:
         findings = [f"Matches for {task!r}:"] + matched[:20] + findings
@@ -554,8 +557,8 @@ def read_images(
     summary = (
         f"OCR inventory of {len(resolved)} image(s), {line_count} text lines, backend={backend}. "
         "Verbatim on-screen text, not a recette verdict. Spreadsheet screenshots are rebuilt as a "
-        "table from bounding boxes. Crop a region with local_image_crop when layout or colour "
-        "matters; do not attach the full screenshot."
+        "table from bounding boxes. Full table: local_expand the 8-char image id. Crop a region "
+        "with local_image_crop when layout or colour matters; do not attach the full screenshot."
     )
     source_chars = sum(attach_source_chars(item) for item in resolved)
     report = Report(
@@ -566,18 +569,18 @@ def read_images(
         evidence=evidence_items,
         next_actions=[
             "Crop a material region with local_image_crop and its id (e.g. a832b1c4-R1).",
-            "Look at the original only if a crop is not enough for layout or colour.",
+            "Full OCR table: local_expand the 8-char image id.",
         ],
         stats={
             "images": len(resolved),
             "lignes": line_count,
             "tables": table_count,
-            "regions": len(evidence_items),
+            "regions": region_count,
             "backend": backend,
             "source_caracteres": source_chars,
         },
         errors=errors,
-        details="\n\n".join(details_parts),
+        details="",
     )
     return vision.enrich(config, client, report, pages, task)
 

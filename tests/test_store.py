@@ -69,6 +69,24 @@ def main() -> None:
         img_ids = attach_report_evidence(db, fake)
         check("compare ids are store ids", img_ids[0].startswith("IMG-E"))
         check("no synthetic IMG-E1", fake.evidence[0]["id"] == img_ids[0])
+
+        from local_agent.evidence import store as store_image
+
+        shot = root / "board.png"
+        shot.write_bytes(b"png")
+        store_image(
+            "baddcafe",
+            {
+                "path": str(shot),
+                "sha256": sha256_file(shot),
+                "transcript": "| Type | Valeur |\n| a | 1 |",
+                "grid": [["Type", "Valeur"], ["a", "1"]],
+                "regions": [{"id": "baddcafe-R1"}],
+            },
+        )
+        image_full = expand("baddcafe", db)
+        check("expand 8-char image packet", image_full.get("type") == "image")
+        check("expand returns OCR transcript", "Type" in str((image_full.get("payload") or {}).get("transcript") or ""))
         db.close()
 
         garbage = root / "broken.db"

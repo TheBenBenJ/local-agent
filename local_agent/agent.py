@@ -13,7 +13,6 @@ from . import agent_tools, extract, gateway, prompts, risk, router, tasks
 from .config import Config
 from .files import GuardrailError, relative_to_root
 from .mlx import MlxClient, MlxError
-from .ocr import IMAGE_OUTPUT_TOKENS
 from .report import Report
 from .store import Store, write_trace
 
@@ -607,8 +606,6 @@ def run_task(
     if path:
         parsed = [gateway.Source("repo", path, f"repo://{path}"), *parsed]
     reason = why or infer_why(parsed, task)
-    if any(item.scheme == "image" for item in parsed):
-        config = replace(config, max_output_tokens=max(config.max_output_tokens, IMAGE_OUTPUT_TOKENS))
     focus = next((item.reference for item in parsed if item.scheme in {"repo", "file"} and item.reference not in {".", ""}), None)
     started = time.monotonic()
     deadline = started + max(20, config.max_runtime)

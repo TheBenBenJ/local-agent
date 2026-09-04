@@ -81,10 +81,11 @@ TOOLS: list[dict] = [
     {
         "name": "local_expand",
         "description": (
-            "Fetch one or more evidence items by id (CODE-E12, E12, IMG-E2, a832b1c4-R1). "
-            "Raw excerpts stay local until you ask. Prefer this over re-reading the file. "
-            "Ask for what you need: fields=[\"comments\"] or max_chars=600 rather than the whole "
-            "payload, which can be several thousand tokens for a wiki page."
+            "Fetch one or more evidence items by id (CODE-E12, E12, IMG-E2, a832b1c4-R1, "
+            "or the 8-char image id from local_image). Raw excerpts stay local until you ask. "
+            "Prefer this over re-reading the file. Ask for what you need: fields=[\"comments\"] "
+            "or max_chars=600 rather than the whole payload, which can be several thousand tokens "
+            "for a wiki page. An 8-char image id returns the full OCR table."
         ),
         "inputSchema": {
             "type": "object",
@@ -261,6 +262,7 @@ TOOLS: list[dict] = [
             "has vision, a second pass on the same weights fills layout gaps (merged headers, "
             "selected filters, disabled buttons). Pixels stay local; pass a filesystem path. "
             "Inventory only: labels, errors, buttons, empty states. Not a recette verdict. "
+            "The full OCR table stays on disk: local_expand the 8-char image id. "
             "For colour of one region, crop with local_image_crop instead of attaching the full screenshot."
         ),
         "inputSchema": {

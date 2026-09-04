@@ -19,6 +19,8 @@ from pathlib import Path
 from . import evidence as image_evidence
 from .files import GuardrailError
 
+IMAGE_PACKET_ID = re.compile(r"^[0-9a-f]{8}$")
+
 DB_PATH = Path.home() / ".local-agent" / "context.db"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -541,11 +543,49 @@ def write_trace(task_id: int, payload: dict) -> Path:
     return path
 
 
+def _expand_image_packet(image_id: str) -> dict:
+    """Full OCR transcript stored by local_image. Packet itself is only an inventory."""
+    packet = image_evidence.load(image_id)
+    path = str(packet.get("path") or "")
+    status = "current"
+    reason = ""
+    if path and Path(path).is_file() and packet.get("sha256"):
+        if sha256_file(Path(path)) != packet.get("sha256"):
+            status = "stale_evidence"
+            reason = "source changed since evidence was recorded."
+    transcript = str(packet.get("transcript") or "")
+    if not transcript:
+        lines = packet.get("lines") or []
+        transcript = "\n".join(
+            str(item.get("text") or "").strip()
+            for item in lines
+            if isinstance(item, dict) and str(item.get("text") or "").strip()
+        )
+    regions = packet.get("regions") or []
+    return {
+        "id": image_id,
+        "type": "image",
+        "status": status,
+        "reason": reason,
+        "source": path,
+        "payload": {
+            "transcript": transcript,
+            "regions": [str(item.get("id")) for item in regions if item.get("id")],
+            "vision": packet.get("vision") or {},
+        },
+    }
+
+
 def expand(identifier: str, store: Store | None = None, config=None) -> dict:
-    """Resolve E14 / IMG-E2 / a832-R1. Re-read the source; never return a silent stale excerpt."""
+    """Resolve E14 / IMG-E2 / a832-R1 / 8-char image id. Re-read the source; never return a silent stale excerpt."""
     text = str(identifier or "").strip()
     if not text:
         raise GuardrailError("evidence id is required")
+    if IMAGE_PACKET_ID.fullmatch(text):
+        try:
+            return _expand_image_packet(text)
+        except GuardrailError:
+            pass
     if "-R" in text.upper() or text.startswith("image://"):
         image_id, region = image_evidence.parse_region_id(text)
         packet = image_evidence.load(image_id)

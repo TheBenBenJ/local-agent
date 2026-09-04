@@ -118,8 +118,6 @@ def enrich(
         extra.append("Local vision headers: " + " | ".join(headers[:12]))
     if extra:
         report.findings = extra + report.findings
-        block = "### Local vision\n" + "\n".join(f"- {item}" for item in extra)
-        report.details = (report.details + "\n\n" + block).strip() if report.details else block
     for page in chosen:
         image_id = str(page.get("image_id") or "")
         if not image_id:
