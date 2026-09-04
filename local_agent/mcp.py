@@ -82,13 +82,24 @@ TOOLS: list[dict] = [
         "name": "local_expand",
         "description": (
             "Fetch one or more evidence items by id (CODE-E12, E12, IMG-E2, a832b1c4-R1). "
-            "Raw excerpts stay local until you ask. Prefer this over re-reading the file."
+            "Raw excerpts stay local until you ask. Prefer this over re-reading the file. "
+            "Ask for what you need: fields=[\"comments\"] or max_chars=600 rather than the whole "
+            "payload, which can be several thousand tokens for a wiki page."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string", "description": "Evidence id, e.g. CODE-E12 or a832b1c4-R1"},
                 "ids": {"type": "array", "items": {"type": "string"}},
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Payload keys to return, e.g. [\"comments\"] or [\"body\"]. Everything by default.",
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Trim each returned string to this length. No trim by default.",
+                },
                 "repo": _REPO,
             },
         },
@@ -313,8 +324,18 @@ TOOLS: list[dict] = [
     },
     {
         "name": "local_ping",
-        "description": "Check that the local LLM server responds and show the effective local-agent configuration.",
-        "inputSchema": {"type": "object", "properties": {"repo": _REPO}},
+        "description": (
+            "Liveness check: model, vision, OCR backend, repo state. "
+            "full=true adds the effective configuration and the model capabilities; "
+            "counters live in local_metrics."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "full": {"type": "boolean", "description": "Return configuration, capabilities and counters too"},
+                "repo": _REPO,
+            },
+        },
     },
 ]
 
@@ -389,7 +410,7 @@ def _result_from_report(report: Report, config: Config, tool: str = "") -> ToolR
     db = store.Store()
     try:
         store.attach_report_evidence(db, report)
-        text = render_markdown(report, config)
+        text = render_markdown(report, config, with_savings=False)
         source = report.stats.get("source_caracteres")
         source_i = int(source) if isinstance(source, int) else 0
         saved = max(0, source_i - len(text)) if source_i else 0
@@ -408,6 +429,38 @@ def _result_from_report(report: Report, config: Config, tool: str = "") -> ToolR
     return ToolResult(text=text, saved=saved, source_chars=source_i)
 
 
+def _trim(value: object, limit: int | None) -> object:
+    if not limit or limit <= 0:
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + " [... tronqué, relancer sans max_chars ...]"
+    if isinstance(value, list):
+        return [_trim(item, limit) for item in value]
+    if isinstance(value, dict):
+        return {key: _trim(item, limit) for key, item in value.items()}
+    return value
+
+
+def _select_fields(payload: dict, fields: object, max_chars: object) -> dict:
+    """Rendre un champ demandé plutôt que le payload entier : c'est là que part le contexte."""
+    limit = int(max_chars) if isinstance(max_chars, (int, float)) and max_chars else None
+    interieur = payload.get("payload")
+    noms = [str(item) for item in (fields or []) if str(item).strip()]
+    if noms and isinstance(interieur, dict):
+        garde = {nom: interieur[nom] for nom in noms if nom in interieur}
+        absents = [nom for nom in noms if nom not in interieur]
+        payload = dict(payload)
+        payload["payload"] = _trim(garde, limit)
+        payload["payload_keys"] = sorted(interieur)
+        if absents:
+            payload["fields_absents"] = absents
+        return payload
+    if limit:
+        payload = dict(payload)
+        payload["payload"] = _trim(interieur, limit)
+    return payload
+
+
 def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) -> ToolResult:
     """Rend le texte de réponse et l'estimation de contexte épargné à l'orchestrateur."""
     config = _with_repo(config, arguments)
@@ -421,14 +474,31 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
             checks = sorted(shell.load_checks(config))
         except ValueError as error:
             checks = [f"unreadable: {error}"]
+        mlx = client.ping()
+        if arguments.get("full"):
+            payload = {
+                "mlx": mlx,
+                "server": describe(),
+                "repo_root_state": root_state,
+                "checks_disponibles": checks,
+                "ocr": ocr.backend_status(),
+                "config": config.as_summary(),
+                "metrics": store.Store().stats(),
+            }
+            return ToolResult(text=json.dumps(payload, ensure_ascii=False, indent=2))
+        # Un contrôle de vie n'a pas à coûter la configuration entière : full=true la rend.
+        capacites = (mlx.get("capabilities") or {}) if isinstance(mlx, dict) else {}
         payload = {
-            "mlx": client.ping(),
-            "server": describe(),
+            "alive": bool(mlx.get("echo")) if isinstance(mlx, dict) else False,
+            "model": mlx.get("model") if isinstance(mlx, dict) else None,
+            "vision": bool(mlx.get("vision")) if isinstance(mlx, dict) else False,
+            "context_length": capacites.get("context_length"),
+            "server_version": describe().get("version"),
+            "repo_root": str(config.repo_root),
             "repo_root_state": root_state,
-            "checks_disponibles": checks,
-            "ocr": ocr.backend_status(),
-            "config": config.as_summary(),
-            "metrics": store.Store().stats(),
+            "ocr_backend": (ocr.backend_status() or {}).get("preferred"),
+            "checks": checks,
+            "more": "full=true for config and capabilities, local_metrics for counters",
         }
         return ToolResult(text=json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -474,8 +544,9 @@ def _handle_tool(name: str, arguments: dict, config: Config, client: MlxClient) 
                         )
                 else:
                     payload = store.expand(identifier, db, config)
-                    chunks.append(json.dumps(payload, ensure_ascii=False, indent=2))
                     source_chars += len(json.dumps(payload.get("payload") or {}))
+                    payload = _select_fields(payload, arguments.get("fields"), arguments.get("max_chars"))
+                    chunks.append(json.dumps(payload, ensure_ascii=False, indent=2))
             except (GuardrailError, ValueError) as error:
                 chunks.append(f"{identifier}: {error}")
         text = "\n\n".join(chunks)
