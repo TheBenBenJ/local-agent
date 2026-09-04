@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from .config import Config
@@ -46,19 +47,34 @@ class Report:
         return {key: value for key, value in payload.items() if value}
 
 
-def _section(name: str, items: list[str], limit: int = 25) -> list[str]:
-    if not items:
+def _cle(texte: object) -> str:
+    """Forme comparable d'une ligne : sans identifiant de tête, sans casse, sans espaces doubles."""
+    brut = re.sub(r"^[-*+]\s+|^#{1,6}\s+", "", str(texte or "").strip())
+    brut = re.sub(r"^[A-Z]+-E\d+\s*:\s*", "", brut)
+    return re.sub(r"\s+", " ", brut).strip().lower()[:160]
+
+
+def _section(name: str, items: list[str], limit: int = 25, vus: set[str] | None = None) -> list[str]:
+    retenus = []
+    for item in items:
+        cle = _cle(item)
+        if vus is not None and cle:
+            if cle in vus:
+                continue
+            vus.add(cle)
+        retenus.append(item)
+    if not retenus:
         return []
     lines = [f"## {name}"]
-    for item in items[:limit]:
+    for item in retenus[:limit]:
         lines.append(f"- {item}")
-    if len(items) > limit:
-        lines.append(f"- (+{len(items) - limit} more)")
+    if len(retenus) > limit:
+        lines.append(f"- (+{len(retenus) - limit} more)")
     lines.append("")
     return lines
 
 
-def _evidence_section(items: list[dict], limit: int = 15) -> list[str]:
+def _evidence_section(items: list[dict], limit: int = 15, vus: set[str] | None = None) -> list[str]:
     if not items:
         return []
     lines = ["## Evidence"]
@@ -68,6 +84,13 @@ def _evidence_section(items: list[dict], limit: int = 15) -> list[str]:
         conf = item.get("confidence")
         content = str(item.get("content") or "").replace("\n", " ").strip()
         suffix = f", {conf}" if isinstance(conf, (int, float)) else ""
+        cle = _cle(content)
+        # L'identifiant reste adressable même quand son extrait est déjà plus haut.
+        if vus is not None and cle and cle in vus:
+            lines.append(f"- `{identifier}` ({kind}{suffix})")
+            continue
+        if vus is not None and cle:
+            vus.add(cle)
         lines.append(f"- `{identifier}` ({kind}{suffix}): {content[:220]}")
     if len(items) > limit:
         lines.append(f"- (+{len(items) - limit} more)")
@@ -75,19 +98,23 @@ def _evidence_section(items: list[dict], limit: int = 15) -> list[str]:
     return lines
 
 
-def render_markdown(report: Report, config: Config) -> str:
+def render_markdown(report: Report, config: Config, *, with_savings: bool = True) -> str:
     lines: list[str] = []
+    vus: set[str] = set()
     if report.title:
         lines += [f"# {report.title}", ""]
     if report.summary:
         lines += [report.summary.strip(), ""]
-    lines += _section("Findings", report.findings)
+        for morceau in report.summary.strip().split("\n"):
+            if _cle(morceau):
+                vus.add(_cle(morceau))
+    lines += _section("Findings", report.findings, vus=vus)
     lines += _section("Files", report.files, limit=40)
-    lines += _section("Locations", report.locations, limit=40)
-    lines += _section("Risks", report.risks)
+    lines += _section("Locations", report.locations, limit=40, vus=vus)
+    lines += _section("Risks", report.risks, vus=vus)
     lines += _section("Changes", report.changes, limit=40)
-    lines += _evidence_section(report.evidence)
-    lines += _section("Next actions", report.next_actions, limit=10)
+    lines += _evidence_section(report.evidence, vus=vus)
+    lines += _section("Next actions", report.next_actions, limit=10, vus=vus)
     if report.errors:
         lines += _section("Local-agent failures", report.errors)
     stats = dict(report.stats)
@@ -96,10 +123,12 @@ def render_markdown(report: Report, config: Config) -> str:
         rendered = ", ".join(f"{key}={value}" for key, value in stats.items())
         lines += ["## Stats", rendered, ""]
     if report.details:
-        lines += ["## Details", report.details.strip(), ""]
+        neuf = [ligne for ligne in report.details.strip().split("\n") if not (_cle(ligne) and _cle(ligne) in vus)]
+        if any(ligne.strip() for ligne in neuf):
+            lines += ["## Details", "\n".join(neuf).strip(), ""]
     text = "\n".join(lines).strip()
     # Make the saving visible on every call: that is the point of the tool.
-    if isinstance(source_chars, int) and source_chars > len(text):
+    if with_savings and isinstance(source_chars, int) and source_chars > len(text):
         ratio = source_chars / max(1, len(text))
         text += (
             f"\n\nContext avoided: ~{source_chars} characters examined locally, "
