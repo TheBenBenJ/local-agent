@@ -13,13 +13,18 @@ from pathlib import Path
 from . import atlassian
 
 _TAG = re.compile(r"<[^>]+>", re.DOTALL)
-_MAX_BODY = 4000
+_MACRO = re.compile(r"<ac:structured-macro[^>]*?ac:name=\"([^\"]+)\"[^>]*>", re.DOTALL)
+_UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE)
+_MAX_BODY = 12000
 
 
 def storage_text(raw: str) -> str:
-    text = re.sub(r"<ac:structured-macro[^>]*ac:name=\"([^\"]+)\"", r" [\1] ", raw or "")
+    # la balise de macro se remplace en entier : n'en consommer que le début laissait
+    # ses attributs (ac:schema-version, ac:local-id) dans le texte rendu
+    text = _MACRO.sub(r" [\1] ", raw or "")
     text = _TAG.sub(" ", text)
     text = html.unescape(text)
+    text = _UUID.sub(" ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
