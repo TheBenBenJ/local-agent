@@ -27,6 +27,25 @@ def _adf_text(node: object) -> str:
         return text.strip() + "\n"
     return text
 
+_MAX_TEXT = 12000
+_MAX_COMMENTS = 12
+
+
+def _comments(node: object) -> list[dict]:
+    """The exchange with the reporter lives in the comments, not in the description."""
+    items = (node or {}).get("comments") if isinstance(node, dict) else None
+    packed = []
+    for item in (items or [])[-_MAX_COMMENTS:]:
+        body = _adf_text(item.get("body")).strip()
+        if not body:
+            continue
+        packed.append({
+            "author": ((item.get("author") or {}).get("displayName") or ""),
+            "created": str(item.get("created") or "")[:10],
+            "body": body[:2000],
+        })
+    return packed
+
 
 def fetch(key: str, repo_root: Path | None = None) -> dict:
     """Return an ISSUE CONTRACT. If Jira is not configured, explain how to add it."""
@@ -42,7 +61,8 @@ def fetch(key: str, repo_root: Path | None = None) -> dict:
             ),
             "key": key,
         }
-    url = f"{creds['base']}/rest/api/3/issue/{key}"
+    wanted = "summary,description,status,issuetype,components,attachment,comment"
+    url = f"{creds['base']}/rest/api/3/issue/{key}?fields={wanted}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     atlassian.authorize(request, creds)
     try:
@@ -65,7 +85,8 @@ def fetch(key: str, repo_root: Path | None = None) -> dict:
         "configured": True,
         "key": key,
         "goal": fields.get("summary") or "",
-        "acceptance_criteria_verbatim": str(description or "").strip()[:4000],
+        "acceptance_criteria_verbatim": str(description or "").strip()[:_MAX_TEXT],
+        "comments": _comments(fields.get("comment")),
         "status": (fields.get("status") or {}).get("name"),
         "issuetype": (fields.get("issuetype") or {}).get("name"),
         "components": [item.get("name") for item in (fields.get("components") or []) if item.get("name")],
