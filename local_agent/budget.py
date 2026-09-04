@@ -49,29 +49,18 @@ def savings_footer(
     lifetime_saved: int,
     lifetime_compounded: int,
 ) -> str:
-    """Four counters: raw, visible, avoided, exposure. Exposure is not billed usage."""
+    """One line: raw, visible, avoided, and the exposure caveat. Totals live in local_metrics."""
     raw = tokens_from_chars(source_chars)
     visible = tokens_from_chars(returned_chars)
     avoided = max(0, raw - visible)
-    lines = [
-        f"\n\nRaw context processed locally: ~{raw} tokens",
-        f"Claude-visible context returned: ~{visible} tokens",
-        (
-            f"Direct context avoided: ~{avoided} this call · "
-            f"~{tokens_from_chars(session_saved)} this session · "
-            f"~{tokens_from_chars(lifetime_saved)} lifetime"
-        ),
-    ]
+    ligne = f"\n\nLocal-agent: ~{raw} tok read locally, ~{visible} returned, ~{avoided} avoided this call"
     if remaining_turns <= 0:
-        lines.append("Optional exposure estimate: disabled (LOCAL_AGENT_COMPOUND_TURNS=0).")
-        return "\n".join(lines)
+        return ligne + " (exposure off: LOCAL_AGENT_COMPOUND_TURNS=0). Totals: local_metrics."
     exposure = tokens_from_chars(billed_chars(avoided * 4, remaining_turns))
-    lines.append(
-        f"Optional exposure estimate: ~{exposure} token-turns "
-        f"(assumption: {remaining_turns} future turns). "
-        "NOT equivalent to billed Claude tokens. cache and compaction apply."
+    return ligne + (
+        f" (~{exposure} token-turns over {remaining_turns} turns, not billed usage)."
+        " Totals: local_metrics."
     )
-    return "\n".join(lines)
 
 
 def passthrough(
